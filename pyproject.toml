@@ -37,7 +37,7 @@ version = {attr = "dronemap.__version__"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-dronemap = ["assets/*.png"]
+dronemap = ["assets/*.png", "assets/presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

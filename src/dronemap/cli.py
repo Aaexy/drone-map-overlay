@@ -19,6 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("videos", nargs="*", help="video files (none: open the app)")
     ap.add_argument("-o", "--output", help="output file (only with a single video)")
     ap.add_argument("--settings", metavar="JSON", help="settings file to use instead of the app's saved settings")
+    ap.add_argument("--preset", metavar="NAME", help="use a saved preset's look and layout (a preset name or a .json file)")
+    ap.add_argument("--list-presets", action="store_true", help="list the saved presets and exit")
     ap.add_argument("--preview", type=float, metavar="SECONDS", help="write a PNG of one frame instead of a video")
     ap.add_argument("--limit", type=float, metavar="SECONDS", help="only render the first SECONDS of each video")
     ap.add_argument("-v", "--verbose", action="store_true", help="print detailed progress information")
@@ -29,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = build_parser()
     a = ap.parse_args(argv)
+    if a.list_presets:
+        for p in settings_mod.list_presets():
+            print(p["name"] + ("  (built in)" if p["builtin"] else ""))
+        return 0
     if not a.videos:
         from .app import run
 
@@ -41,6 +47,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         cfg = settings_mod.load_file(a.settings) if a.settings else settings_mod.load()
     except (OSError, ValueError) as e:
         ap.error("can't read settings file: %s" % e)
+    if a.preset:
+        try:
+            cfg = settings_mod.apply_preset(cfg, settings_mod.load_preset(a.preset))
+        except settings_mod.PresetError as e:
+            names = ", ".join(p["name"] for p in settings_mod.list_presets())
+            ap.error("%s Available presets: %s" % (e, names))
 
     if a.preview is not None:
         from .pipeline import render_preview

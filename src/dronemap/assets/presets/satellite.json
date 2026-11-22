@@ -1,0 +1,60 @@
+{
+  "name": "Satellite explorer",
+  "version": 3,
+  "map": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "right",
+        "bottom"
+      ],
+      "dx": 0.04,
+      "dy": 0.04,
+      "w": 0.36,
+      "h": 0.36
+    },
+    "zoom": 16,
+    "orientation": "north",
+    "style": "satellite",
+    "shape": "rounded",
+    "opacity": 1.0,
+    "trail": "full",
+    "trail_seconds": 30,
+    "marker": "arrow",
+    "show_full_route": true,
+    "show_cone": true,
+    "show_north": true,
+    "show_border": true,
+    "show_credit": false
+  },
+  "stats": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "left",
+        "top"
+      ],
+      "dx": 0.04,
+      "dy": 0.04,
+      "w": 0.25,
+      "h": 0.42
+    },
+    "layout": "column",
+    "theme": "dark",
+    "speed": true,
+    "altitude": true,
+    "vspeed": true,
+    "heading": true,
+    "distance": true,
+    "home": true,
+    "time": false,
+    "coords": false
+  },
+  "style": {
+    "accent": "#3ec7ff",
+    "panel_opacity": 0.8,
+    "roundness": 0.06,
+    "shadow": true,
+    "units": "metric"
+  }
+}

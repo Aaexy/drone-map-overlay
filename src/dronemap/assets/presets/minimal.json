@@ -1,0 +1,60 @@
+{
+  "name": "Minimal",
+  "version": 3,
+  "map": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "right",
+        "top"
+      ],
+      "dx": 0.04,
+      "dy": 0.04,
+      "w": 0.26,
+      "h": 0.26
+    },
+    "zoom": 17,
+    "orientation": "heading",
+    "style": "light",
+    "shape": "circle",
+    "opacity": 1.0,
+    "trail": "recent",
+    "trail_seconds": 30,
+    "marker": "dot",
+    "show_full_route": false,
+    "show_cone": false,
+    "show_north": true,
+    "show_border": true,
+    "show_credit": false
+  },
+  "stats": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "center",
+        "bottom"
+      ],
+      "dx": 0.0,
+      "dy": 0.035,
+      "w": 0.34,
+      "h": 0.085
+    },
+    "layout": "row",
+    "theme": "dark",
+    "speed": true,
+    "altitude": true,
+    "vspeed": false,
+    "heading": false,
+    "distance": false,
+    "home": false,
+    "time": false,
+    "coords": false
+  },
+  "style": {
+    "accent": "#ff5c36",
+    "panel_opacity": 0.6,
+    "roundness": 0.06,
+    "shadow": true,
+    "units": "metric"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "Night",
+  "version": 3,
+  "map": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "left",
+        "bottom"
+      ],
+      "dx": 0.0444,
+      "dy": 0.1468,
+      "w": 0.2843,
+      "h": 0.287
+    },
+    "zoom": 17,
+    "orientation": "heading",
+    "style": "dark",
+    "shape": "rounded",
+    "opacity": 1.0,
+    "trail": "full",
+    "trail_seconds": 30,
+    "marker": "arrow",
+    "show_full_route": false,
+    "show_cone": true,
+    "show_north": true,
+    "show_border": false,
+    "show_credit": false
+  },
+  "stats": {
+    "enabled": true,
+    "box": {
+      "anchor": [
+        "left",
+        "bottom"
+      ],
+      "dx": 0.0444,
+      "dy": 0.0352,
+      "w": 0.2843,
+      "h": 0.1
+    },
+    "layout": "row",
+    "theme": "dark",
+    "speed": true,
+    "altitude": true,
+    "vspeed": false,
+    "heading": true,
+    "distance": true,
+    "home": false,
+    "time": true,
+    "coords": true
+  },
+  "style": {
+    "accent": "#ffd23e",
+    "panel_opacity": 0.8,
+    "roundness": 0.12,
+    "shadow": true,
+    "units": "metric"
+  }
+}

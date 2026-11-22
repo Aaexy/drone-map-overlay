@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QMenu,
     QMessageBox,
@@ -33,11 +34,13 @@ from ..pipeline import demo_background, demo_track
 from . import theme
 from .canvas import BoxItem, PreviewView
 from .controls import Section, Segmented, Swatch, Toggle, button, label
+from .platform import open_file
 from .workers import FrameJob, PreviewLoadJob, WidgetPreviewJob
 
 log = logging.getLogger(__name__)
 
 SWATCHES = ["#ff5c36", "#ffb020", "#3ddc97", "#22c3ff", "#8b7bff", "#ff4d8d"]
+PRESET_FILTER = "Drone Map Overlay presets (*.json);;All files (*)"
 VIDEO_FILTER = "Videos (*.mp4 *.MP4 *.mov *.MOV *.m4v *.mkv);;All files (*)"
 
 
@@ -128,23 +131,31 @@ class SettingsDialog(QDialog):
         )
         main.addLayout(left, 1)
 
-        # ---------- right: options
-        panel = QWidget()
-        form = QVBoxLayout(panel)
-        form.setContentsMargins(0, 0, 8, 0)
-        form.setSpacing(12)
-        form.addWidget(self._map_section())
-        form.addWidget(self._stats_section())
-        form.addWidget(self._look_section())
-        form.addWidget(self._output_section())
-        form.addWidget(self._app_section())
-        form.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(panel)
-        scroll.setFixedWidth(390)
-        main.addWidget(scroll)
+        # ---------- right: presets + options
+        right = QVBoxLayout()
+        right.setSpacing(10)
+        prow = QHBoxLayout()
+        prow.setSpacing(8)
+        self.preset_btn = button("", None, None)
+        self.preset_btn.setToolTip("Saved looks and layouts: apply one, or save the current settings as a preset")
+        self.preset_btn.setStyleSheet("text-align: left;")
+        self.preset_btn.clicked.connect(self.preset_menu)
+        prow.addWidget(self.preset_btn, 1)
+        save_preset = button("Save as preset…", None, self.save_preset_as)
+        save_preset.setToolTip("Save the map, stats and look (not the output folder) as a preset you can reuse")
+        prow.addWidget(save_preset)
+        right.addLayout(prow)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidget(self._options_panel())
+        right.addWidget(self.scroll, 1)
+        rw = QWidget()
+        rw.setLayout(right)
+        rw.setFixedWidth(390)
+        right.setContentsMargins(0, 0, 0, 0)
+        main.addWidget(rw)
+        self._paint_preset()
 
         btns = QHBoxLayout()
         btns.addWidget(button("Restore defaults", "ghost", self.restore_defaults))
@@ -166,6 +177,148 @@ class SettingsDialog(QDialog):
         last = self.cfg["app"].get("last_video")
         if last and os.path.exists(last):
             self.load_preview(last)
+
+    def _options_panel(self):
+        panel = QWidget()
+        form = QVBoxLayout(panel)
+        form.setContentsMargins(0, 0, 8, 0)
+        form.setSpacing(12)
+        form.addWidget(self._map_section())
+        form.addWidget(self._stats_section())
+        form.addWidget(self._look_section())
+        form.addWidget(self._output_section())
+        form.addWidget(self._app_section())
+        form.addStretch(1)
+        return panel
+
+    def rebuild_options(self):
+        """Recreate the option controls so they show self.cfg (after applying a preset)."""
+        pos = self.scroll.verticalScrollBar().value()
+        old = self.scroll.takeWidget()
+        self.scroll.setWidget(self._options_panel())
+        if old is not None:
+            old.deleteLater()
+        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(pos))
+
+    # ----- presets
+    def _current_preset(self):
+        """Name of the preset the current settings match, or None if they've been changed."""
+        mine = settings_mod.preset_from(self.cfg, "")
+        for p in settings_mod.list_presets():
+            try:
+                theirs = settings_mod.preset_from(settings_mod.apply_preset(self.cfg, settings_mod.load_preset(p["path"])), "")
+            except settings_mod.PresetError:
+                continue
+            if all(theirs[k] == mine[k] for k in settings_mod.PRESET_SECTIONS):
+                return p["name"]
+        return None
+
+    def _paint_preset(self):
+        name = self._current_preset()
+        self.preset_btn.setText("Preset:  %s   ▾" % (name or "Custom"))
+
+    def preset_menu(self):
+        m = QMenu(self)
+        current = self._current_preset()
+        presets = settings_mod.list_presets()
+        for p in presets:
+            a = m.addAction(p["name"], lambda p=p: self.apply_preset(p["path"]))
+            a.setCheckable(True)
+            a.setChecked(p["name"] == current)
+        m.addSeparator()
+        m.addAction("Save current settings as preset…", self.save_preset_as)
+        mine = [p for p in presets if not p["builtin"]]
+        if mine:
+            ren = m.addMenu("Rename")
+            dele = m.addMenu("Delete")
+            for p in mine:
+                ren.addAction(p["name"], lambda p=p: self.rename_preset(p["name"]))
+                dele.addAction(p["name"], lambda p=p: self.delete_preset(p["name"]))
+        m.addSeparator()
+        m.addAction("Import preset…", self.import_preset)
+        m.addAction("Export current settings…", self.export_preset)
+        m.addAction("Open presets folder", self.open_presets_folder)
+        m.exec(self.preset_btn.mapToGlobal(self.preset_btn.rect().bottomLeft()))
+
+    def apply_preset(self, path):
+        try:
+            self.cfg = settings_mod.apply_preset(self.cfg, settings_mod.load_preset(path))
+        except settings_mod.PresetError as e:
+            QMessageBox.warning(self, "Preset", str(e))
+            return
+        self.rebuild_options()
+        self.setup_scene()
+        self._paint_preset()
+
+    def _ask_name(self, title, text, default=""):
+        name, ok = QInputDialog.getText(self, title, text, QLineEdit.EchoMode.Normal, default)
+        return name.strip() if ok and name.strip() else None
+
+    def save_preset_as(self):
+        self.on_box_committed()
+        name = self._ask_name("Save preset", "Name for this look and layout:", self._current_preset() or "")
+        if not name:
+            return
+        existing = settings_mod.find_preset(name)
+        if existing and not os.path.isfile(name):
+            what = "a built-in preset (yours will be used instead)" if existing["builtin"] else "your preset"
+            if (
+                QMessageBox.question(self, "Save preset", "Replace %s “%s”?" % (what, existing["name"]))
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+        try:
+            settings_mod.save_preset(name, self.cfg)
+        except (OSError, settings_mod.PresetError) as e:
+            QMessageBox.warning(self, "Save preset", "Couldn't save the preset: %s" % e)
+        self._paint_preset()
+
+    def rename_preset(self, old):
+        new = self._ask_name("Rename preset", "New name:", old)
+        if not new or new == old:
+            return
+        try:
+            settings_mod.rename_preset(old, new)
+        except (OSError, settings_mod.PresetError) as e:
+            QMessageBox.warning(self, "Rename preset", str(e))
+        self._paint_preset()
+
+    def delete_preset(self, name):
+        if QMessageBox.question(self, "Delete preset", "Delete the preset “%s”?" % name) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            settings_mod.delete_preset(name)
+        except (OSError, settings_mod.PresetError) as e:
+            QMessageBox.warning(self, "Delete preset", str(e))
+        self._paint_preset()
+
+    def import_preset(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Import preset", os.path.expanduser("~"), PRESET_FILTER)
+        if not f:
+            return
+        try:
+            name = settings_mod.import_preset(f)
+        except (OSError, settings_mod.PresetError) as e:
+            QMessageBox.warning(self, "Import preset", str(e))
+            return
+        self.apply_preset(name)
+
+    def export_preset(self):
+        self.on_box_committed()
+        name = self._current_preset() or "My layout"
+        f, _ = QFileDialog.getSaveFileName(
+            self, "Export preset", os.path.join(os.path.expanduser("~"), settings_mod._slug(name) + ".json"), PRESET_FILTER
+        )
+        if not f:
+            return
+        try:
+            settings_mod.export_preset(self.cfg, name, f)
+        except OSError as e:
+            QMessageBox.warning(self, "Export preset", "Couldn't save the preset: %s" % e)
+
+    def open_presets_folder(self):
+        os.makedirs(settings_mod.presets_dir(), exist_ok=True)
+        open_file(settings_mod.presets_dir())
 
     # ----- controls bound to settings
     def _toggle(self, section, key):
@@ -334,6 +487,8 @@ class SettingsDialog(QDialog):
             self.update_box_visibility()
         if rerender:
             self.render_timer.start()
+        if section in settings_mod.PRESET_SECTIONS and hasattr(self, "preset_btn"):
+            self._paint_preset()
 
     # ----- preview scene
     def setup_scene(self):
@@ -383,6 +538,7 @@ class SettingsDialog(QDialog):
             if b.rect.width() > 0:
                 r = b.rect
                 self.cfg[name]["box"] = px_to_box(r.x(), r.y(), r.width(), r.height(), self.PW, self.PH)
+        self._paint_preset()
         self.refresh_widgets()
 
     def refresh_widgets(self):
@@ -483,6 +639,7 @@ class SettingsDialog(QDialog):
         d = settings_mod.defaults()
         for name in [only] if only else ["map", "stats"]:
             self.cfg[name]["box"] = copy.deepcopy(d[name]["box"])
+        self._paint_preset()
         self.setup_scene()
 
     def restore_defaults(self):

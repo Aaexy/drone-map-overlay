@@ -220,3 +220,139 @@ def save(s: Settings) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(normalize(s), f, indent=2)
     os.replace(tmp, settings_path())
+
+
+# ---------------------------------------------------------------- presets
+# A preset is the look and layout of the overlay (map, stats, style), not per-computer
+# things like the output folder or the app theme, so presets can be shared.
+PRESET_SECTIONS = ("map", "stats", "style")
+
+
+class PresetError(ValueError):
+    pass
+
+
+def presets_dir() -> str:
+    return os.path.join(config_dir(), "presets")
+
+
+def builtin_presets_dir() -> str:
+    # also right in the packaged app: PyInstaller puts the assets next to the module
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "presets")
+
+
+def _slug(name: str) -> str:
+    keep = "".join(c if c.isalnum() or c in " -_." else "_" for c in name).strip(" .")
+    return (keep or "preset")[:80]
+
+
+def _read_preset(path: str) -> Settings:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise PresetError("Couldn't read %s: %s" % (os.path.basename(path), e)) from e
+    if not isinstance(data, dict) or not any(isinstance(data.get(s), dict) for s in PRESET_SECTIONS):
+        raise PresetError("%s isn't a Drone Map Overlay preset." % os.path.basename(path))
+    data.setdefault("name", os.path.splitext(os.path.basename(path))[0])
+    return data
+
+
+def list_presets() -> list[dict[str, Any]]:
+    """[{"name", "path", "builtin"}], user presets first-class: a user preset with the same
+    name as a built-in one replaces it in the list."""
+    found: dict[str, dict[str, Any]] = {}
+    for folder, builtin in ((builtin_presets_dir(), True), (presets_dir(), False)):
+        if not os.path.isdir(folder):
+            continue
+        for fn in sorted(os.listdir(folder)):
+            if not fn.lower().endswith(".json"):
+                continue
+            path = os.path.join(folder, fn)
+            try:
+                name = str(_read_preset(path)["name"])
+            except PresetError as e:
+                log.warning("Skipping preset: %s", e)
+                continue
+            found[name.lower()] = {"name": name, "path": path, "builtin": builtin}
+    return sorted(found.values(), key=lambda p: (not p["builtin"], p["name"].lower()))
+
+
+def find_preset(name_or_path: str) -> Optional[dict[str, Any]]:
+    if os.path.isfile(name_or_path):
+        return {"name": _read_preset(name_or_path)["name"], "path": name_or_path, "builtin": False}
+    for p in list_presets():
+        if p["name"].lower() == name_or_path.strip().lower():
+            return p
+    return None
+
+
+def load_preset(name_or_path: str) -> Settings:
+    p = find_preset(name_or_path)
+    if p is None:
+        raise PresetError("No preset called “%s”." % name_or_path)
+    return _read_preset(p["path"])
+
+
+def preset_from(cfg: Settings, name: str) -> Settings:
+    s = normalize(cfg)
+    out: Settings = {"name": name.strip(), "version": VERSION}
+    for sec in PRESET_SECTIONS:
+        out[sec] = copy.deepcopy(s[sec])
+    return out
+
+
+def save_preset(name: str, cfg: Settings) -> str:
+    """Save the overlay part of `cfg` as a user preset; returns its file path."""
+    name = name.strip()
+    if not name:
+        raise PresetError("A preset needs a name.")
+    os.makedirs(presets_dir(), exist_ok=True)
+    path = os.path.join(presets_dir(), _slug(name) + ".json")
+    # replace an existing user preset with the same name even if its file name differs
+    for p in list_presets():
+        if not p["builtin"] and p["name"].lower() == name.lower():
+            path = p["path"]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(preset_from(cfg, name), f, indent=2)
+    os.replace(tmp, path)
+    return path
+
+
+def delete_preset(name: str) -> None:
+    p = find_preset(name)
+    if p is None or p["builtin"]:
+        raise PresetError("Built-in presets can't be deleted." if p else "No preset called “%s”." % name)
+    os.remove(p["path"])
+
+
+def rename_preset(old: str, new: str) -> str:
+    data = load_preset(old)
+    p = find_preset(old)
+    path = save_preset(new, apply_preset(defaults(), data))
+    if p and not p["builtin"] and os.path.abspath(p["path"]) != os.path.abspath(path):
+        os.remove(p["path"])
+    return path
+
+
+def import_preset(path: str) -> str:
+    """Copy a preset file into the presets folder; returns its name."""
+    data = _read_preset(path)
+    name = str(data["name"])
+    save_preset(name, apply_preset(defaults(), data))
+    return name
+
+
+def export_preset(cfg: Settings, name: str, path: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(preset_from(cfg, name), f, indent=2)
+
+
+def apply_preset(cfg: Settings, preset: Settings) -> Settings:
+    """`cfg` with the preset's map / stats / style; everything else is kept."""
+    raw = copy.deepcopy(cfg)
+    for sec in PRESET_SECTIONS:
+        if isinstance(preset.get(sec), dict):
+            raw[sec] = copy.deepcopy(preset[sec])
+    return normalize(raw)
