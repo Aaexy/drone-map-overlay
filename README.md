@@ -169,4 +169,10 @@ recognised, open an issue with a short sample clip.
 
 ## License
 
-Not chosen yet.
+Drone Map Overlay is free software: you can redistribute it and/or modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. See [`LICENSE`](LICENSE).
+
+The packaged apps include third-party software under their own licenses (Qt/PySide6 under
+the LGPL, FFmpeg with x264/x265 under the GPL, and others): see
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

@@ -7,6 +7,12 @@ name = "drone-map-overlay"
 dynamic = ["version"]
 description = "Burn a live GPS map and flight stats into drone videos (DJI telemetry or .SRT)."
 readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
 requires-python = ">=3.9"
 dependencies = [
     "av>=14",

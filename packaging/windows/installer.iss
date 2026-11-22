@@ -28,6 +28,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
 OutputBaseFilename=DroneMapOverlay-{#AppVersion}-Windows-Setup
 SetupIconFile=icon.ico
+LicenseFile=..\..\LICENSE
 UninstallDisplayIcon={app}\Drone Map Overlay.exe
 Compression=lzma2/max
 SolidCompression=yes

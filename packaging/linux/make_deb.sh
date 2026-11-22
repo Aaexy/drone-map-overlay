@@ -12,6 +12,9 @@ mkdir -p "$PKG/DEBIAN" "$PKG/opt" "$PKG/usr/bin" "$PKG/usr/share/applications" "
 cp -R "$SRC" "$PKG/opt/drone-map-overlay"
 ln -s "/opt/drone-map-overlay/Drone Map Overlay" "$PKG/usr/bin/drone-map-overlay"
 cp "$HERE/drone-map-overlay.desktop" "$PKG/usr/share/applications/"
+mkdir -p "$PKG/usr/share/doc/drone-map-overlay"
+cp "$ROOT/LICENSE" "$PKG/usr/share/doc/drone-map-overlay/copyright"
+cp "$ROOT/THIRD_PARTY_LICENSES.md" "$PKG/usr/share/doc/drone-map-overlay/"
 python3 -c "from PIL import Image; Image.open('$ROOT/src/dronemap/assets/icon.png').resize((256, 256), Image.LANCZOS).save('$PKG/usr/share/icons/hicolor/256x256/apps/drone-map-overlay.png')"
 SIZE=$(du -sk "$PKG/opt" | cut -f1)
 cat > "$PKG/DEBIAN/control" <<CONTROL

@@ -39,6 +39,11 @@ First release.
 - Linux: AppImage, `.deb` and portable tar.gz.
 - Portable versions keep their settings and map cache next to the app.
 
+### License
+
+- Released under the GNU General Public License v3 or later. Third-party licenses are listed
+  in `THIRD_PARTY_LICENSES.md` and included with every package.
+
 ### Known limitations
 
 - The apps aren't code-signed yet, so macOS and Windows show a warning the first time.
