@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -145,13 +146,21 @@ def test_render_frame_matches_the_image(fake_osm):
     layer = ar.StreetsLayer(flight(pitch=-45), opts(), {}, W, H)
     layer.prefetch()
     ref = layer.render(5.0)
-    for fmt, dtype in (("yuva420p", np.uint8), ("yuva420p10le", np.uint16)):
+    truth = np.asarray(ref.getchannel("A")).astype(float)
+    white = truth == 255
+    assert white.any()
+    for fmt, dtype, peak in (("yuva420p", np.uint8, 255), ("yuva420p10le", np.uint16, 1023)):
         f = layer.render_frame(5.0, fmt)
         assert (f.width, f.height, f.format.name) == (W, H, fmt)
         alpha = ar._plane_array(f.planes[3], dtype).astype(float)
+        assert np.abs(alpha - truth * peak / 255).max() <= 1
+        y = ar._plane_array(f.planes[0], dtype).astype(float)
+        assert np.median(y[white]) > 0.8 * peak  # opaque white text and lines are bright
+        # for the record: how this FFmpeg build converts the whole image in one go
         full = av.VideoFrame.from_bytes(ref.tobytes(), W, H, format="rgba").reformat(format=fmt)
-        expect = ar._plane_array(full.planes[3], dtype).astype(float)
-        assert np.abs(alpha - expect).max() <= (4 if dtype is np.uint8 else 16)
+        diff = np.abs(ar._plane_array(full.planes[3], dtype).astype(float) - truth * peak / 255).max()
+        if diff > 1:
+            warnings.warn("%s: this FFmpeg's alpha differs from the image by up to %d" % (fmt, diff), stacklevel=1)
 
 
 def test_download_failure_is_reported_not_fatal(monkeypatch):

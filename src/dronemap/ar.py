@@ -380,10 +380,15 @@ class StreetsLayer:
         if parts:
             img, x0, y0 = parts
             small = av.VideoFrame.from_bytes(img.tobytes(), img.width, img.height, format="rgba").reformat(format=fmt)
-            for i, (dst, src) in enumerate(zip(planes, (_plane_array(p, dtype) for p in small.planes))):
+            for i, (dst, src) in enumerate(zip(planes[:3], (_plane_array(p, dtype) for p in small.planes))):
                 sub = 2 if i in (1, 2) else 1  # 4:2:0 chroma
                 h, w = -(-img.height // sub), -(-img.width // sub)
                 dst[y0 // sub : y0 // sub + h, x0 // sub : x0 // sub + w] = src[:h, :w]
+            # Alpha straight from the image: FFmpeg builds disagree on scaling it to 10 bits.
+            a = np.asarray(img.getchannel("A"), dtype=dtype)
+            if dtype is np.uint16:
+                a = (a << 2) | (a >> 6)  # 0..255 -> 0..1023
+            planes[3][y0 : y0 + img.height, x0 : x0 + img.width] = a
         return frame
 
     def _fade(self, dist):
