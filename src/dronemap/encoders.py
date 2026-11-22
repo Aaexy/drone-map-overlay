@@ -93,7 +93,9 @@ def open_output(path: str, src_stream, preference: str, width: int, height: int)
     ten_bit = "10" in (src_cc.format.name if src_cc.format else "")
     errors = []
     for cand in candidates(src_cc.name, preference, ten_bit):
-        out = av.open(path, "w", format="mp4", options={"movflags": "+faststart"})
+        # No "+faststart": it rewrites the whole finished file to move the index to the
+        # front (only useful for web streaming) and took minutes on SD cards.
+        out = av.open(path, "w", format="mp4")
         try:
             st = out.add_stream(cand.codec, rate=nominal_rate(src_stream))
             _configure(st, src_stream, cand, width, height)

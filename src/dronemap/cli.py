@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-o", "--output", help="output file (only with a single video)")
     ap.add_argument("--settings", metavar="JSON", help="settings file to use instead of the app's saved settings")
     ap.add_argument("--preview", type=float, metavar="SECONDS", help="write a PNG of one frame instead of a video")
+    ap.add_argument("--limit", type=float, metavar="SECONDS", help="only render the first SECONDS of each video")
     ap.add_argument("-v", "--verbose", action="store_true", help="print detailed progress information")
     ap.add_argument("--version", action="version", version="%(prog)s " + __version__)
     return ap
@@ -59,7 +60,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     rc = 0
     for v in a.videos:
         try:
-            res = render_video(v, a.output, cfg, _progress_printer())
+            res = render_video(v, a.output, cfg, _progress_printer(), limit=a.limit)
         except KeyboardInterrupt:
             sys.stderr.write("\rCancelled.          \n")
             return 130

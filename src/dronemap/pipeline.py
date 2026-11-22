@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import shutil
+import tempfile
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +30,7 @@ from .telemetry import Sample, Track, load_track
 
 log = logging.getLogger(__name__)
 
-Progress = Callable[[str, float], None]  # (stage, fraction); stage in telemetry/map/render
+Progress = Callable[[str, float], None]  # (stage, fraction): telemetry, map, render, finishing, saving
 CancelCheck = Callable[[], bool]
 
 
@@ -129,6 +130,43 @@ def _check_space(folder: str, needed: int) -> None:
         )
 
 
+def _staging_dir(dest_folder: str, needed: int) -> Optional[str]:
+    """A local folder to render into when the destination is on another drive (e.g. the
+    SD card the video came from), or None to write straight to the destination."""
+    local = tempfile.gettempdir()
+    try:
+        if os.stat(local).st_dev == os.stat(dest_folder).st_dev:
+            return None
+        if shutil.disk_usage(local).free < needed * 1.2:
+            return None
+    except OSError:
+        return None
+    return local
+
+
+def _copy_with_progress(src: str, dst: str, progress: Callable[[float], None], cancelled: CancelCheck) -> None:
+    total = max(1, os.path.getsize(src))
+    done = 0
+    last = 0.0
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while True:
+            chunk = fi.read(16 * 1024 * 1024)
+            if not chunk:
+                break
+            fo.write(chunk)
+            done += len(chunk)
+            if cancelled():
+                raise Cancelled()
+            now = time.time()
+            if now - last > 0.1:
+                last = now
+                progress(done / total)
+        fo.flush()
+        os.fsync(fo.fileno())
+    shutil.copystat(src, dst)
+    progress(1.0)
+
+
 # ------------------------------------------------------------------ rendering
 def _rgba_frame(img: Image.Image, pts, tb) -> VideoFrame:
     f = VideoFrame.from_bytes(img.tobytes(), img.width, img.height, format="rgba")
@@ -147,8 +185,10 @@ def render_video(
     progress: Optional[Progress] = None,
     cancelled: Optional[CancelCheck] = None,
     workers: Optional[int] = None,
+    limit: Optional[float] = None,
 ) -> RenderResult:
-    """Render `src` with the overlay into `dst` (default: next to `src`)."""
+    """Render `src` with the overlay into `dst` (default: next to `src`).
+    `limit` stops after that many seconds of video (quick test renders, benchmarks)."""
     cfg = settings_mod.normalize(cfg) if cfg is not None else settings_mod.load()
     progress = progress or (lambda s, f: None)
     cancelled = cancelled or (lambda: False)
@@ -159,7 +199,7 @@ def render_video(
         )
     folder = os.path.dirname(dst)
     os.makedirs(folder, exist_ok=True)
-    tmp = os.path.join(folder, ".%s.part" % os.path.basename(dst))
+    final_tmp = os.path.join(folder, ".%s.part" % os.path.basename(dst))
     t_start = time.time()
     log.info("Render %s -> %s", src, dst)
 
@@ -188,7 +228,14 @@ def render_video(
     try:
         vs = main_video_stream(inp)
         vs.thread_type = "AUTO"
-        _check_space(folder, int((vs.bit_rate or 50_000_000) * max(1.0, info.duration) / 8 * 1.1) + 100_000_000)
+        seconds = min(info.duration, limit) if limit is not None else info.duration
+        needed = int((vs.bit_rate or 50_000_000) * max(1.0, seconds) / 8 * 1.1) + 100_000_000
+        _check_space(folder, needed)
+        # Writing to a memory card while reading from it roughly halves the speed: render to
+        # the internal disk and copy the finished file across in one go.
+        stage_dir = _staging_dir(folder, needed)
+        tmp = os.path.join(stage_dir, "dronemap-%d-%s.part" % (os.getpid(), os.path.basename(dst))) if stage_dir else final_tmp
+        log.info("Writing to %s", "local staging file " + tmp if stage_dir else tmp)
         out, ost, cand = open_output(tmp, vs, cfg["output"].get("codec", "auto"), info.width, info.height)
         created = inp.metadata.get("creation_time")
         if created:
@@ -226,6 +273,8 @@ def render_video(
         graph.configure()
 
         total = vs.frames or int(info.duration * float(nominal_rate(vs))) or 1
+        if limit is not None:
+            total = min(total, int(limit * float(nominal_rate(vs))) + 1)
         start_pts = vs.start_time or 0
         state = {"frames": 0, "last_pts": None, "last_report": 0.0}
 
@@ -267,29 +316,37 @@ def render_video(
             for packet in inp.demux(*streams):
                 if cancelled():
                     raise Cancelled()
+                if limit is not None and packet.pts is not None and float(packet.pts * packet.time_base) > limit + 1:
+                    break
                 if packet.stream is audio_in:
                     if packet.dts is not None:
                         packet.stream = audio_out
                         out.mux(packet)
                     continue
                 for frame in packet.decode():
-                    if frame.pts is None:
+                    if frame.pts is None or (limit is not None and float((frame.pts - start_pts) * frame.time_base) > limit):
                         continue
                     submit(frame, pool)
                     while len(pending) > n_workers + 2:
                         flush_one()
             while pending:
                 flush_one()
+        progress("finishing", 0.0)
         main_src.push(None)
         for buf, _ in sources:
             buf.push(None)
         drain()
         for pkt in ost.encode(None):
             out.mux(pkt)
+        t_close = time.time()
         out.close()
+        log.info("Finalising the file took %.1fs", time.time() - t_close)
         out = None
         inp.close()
-        os.replace(tmp, dst)
+        if stage_dir:
+            _copy_with_progress(tmp, final_tmp, lambda f: progress("saving", f), cancelled)
+            os.remove(tmp)
+        os.replace(final_tmp, dst)
     except BaseException:
         for c in (out, inp):
             try:
@@ -297,10 +354,12 @@ def render_video(
                     c.close()
             except Exception:
                 pass
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        for leftover in {locals().get("tmp"), final_tmp}:
+            try:
+                if leftover:
+                    os.remove(leftover)
+            except OSError:
+                pass
         raise
 
     failed = ov.failed_tiles()

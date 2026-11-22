@@ -8,6 +8,8 @@ Sources, in order of preference:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import os
@@ -56,6 +58,7 @@ class Track:
     def __init__(self, samples: list[Sample], source: str):
         if not samples:
             raise ValueError("empty track")
+        self.raw = [Sample(s.t, s.lat, s.lon, s.alt, s.speed, s.yaw) for s in samples]
         self.samples = drop_glitches(sorted(samples, key=lambda s: s.t))
         self.source = source
         self._fill_missing()
@@ -219,6 +222,50 @@ def pb_parse(b: bytes):
     return out
 
 
+def pb_shallow(b: bytes):
+    """One level of protobuf: [(field, value)], length-delimited values left as bytes."""
+    i, out, n = 0, [], len(b)
+    while i < n:
+        k, i = _varint(b, i)
+        f, w = k >> 3, k & 7
+        if f == 0:
+            raise ValueError("field 0")
+        if w == 0:
+            v, i = _varint(b, i)
+        elif w == 1:
+            v = struct.unpack_from("<d", b, i)[0]
+            i += 8
+        elif w == 5:
+            v = struct.unpack_from("<f", b, i)[0]
+            i += 4
+        elif w == 2:
+            ln, i = _varint(b, i)
+            v = b[i : i + ln]
+            i += ln
+        else:
+            raise ValueError("wire type %d" % w)
+        if i > n:
+            raise ValueError("short")
+        out.append((f, v))
+    return out
+
+
+def pb_path(b, path):
+    """Follow `path` through nested messages, decoding only the levels on the way."""
+    for depth, want in enumerate(path):
+        if not isinstance(b, (bytes, bytearray)):
+            return None
+        for f, v in pb_shallow(b):
+            if f == want:
+                b = v
+                break
+        else:
+            return None
+        if depth == len(path) - 1:
+            return b
+    return b
+
+
 def pb_get(t, path):
     for f, v in t or []:
         if f == path[0]:
@@ -278,7 +325,49 @@ def _is_djmd(stream):
     return tag == "djmd" or handler.strip() == "CAM meta"
 
 
+def _decode_djmd_fast(raw: bytes) -> Optional[Sample]:
+    """Known layout (DJI Mini 5 Pro), decoding only the fields we use. Falls back to the
+    full decode + heuristic search for unknown layouts."""
+    try:
+        drone = pb_path(raw, [3, 3])
+        gps = pb_path(drone, [4, 1]) if drone is not None else None
+        lat, lon = (pb_path(gps, [2]), pb_path(gps, [3])) if gps is not None else (None, None)
+        if not isinstance(lat, float) or not isinstance(lon, float):
+            return _decode_djmd_frame(pb_parse(raw))
+        if lat == 0.0 and lon == 0.0:
+            return None
+        vel = pb_path(drone, [2])
+        vx, vy = (pb_path(vel, [1]), pb_path(vel, [2])) if vel is not None else (None, None)
+        speed = math.hypot(vx, vy) if isinstance(vx, float) and isinstance(vy, float) else None
+        att = pb_path(drone, [3])
+        yaw = _s64(pb_path(att, [3])) if att is not None else None
+        yaw = (yaw / 10.0) % 360 if isinstance(yaw, int) else None
+        alt = pb_path(drone, [5, 1])
+        alt = alt / 1000.0 if isinstance(alt, (int, float)) else None
+        return Sample(0.0, lat, lon, alt, speed, yaw)
+    except (ValueError, IndexError, struct.error):
+        return None
+
+
 def read_embedded(path: str) -> Optional[Track]:
+    """DJI telemetry from the MP4 itself. Reads only the telemetry samples via the MP4
+    index when possible; falls back to demuxing with FFmpeg."""
+    from . import mp4index
+
+    idx = [t for t in mp4index.tracks(path) if t.format == b"djmd" or t.name == "CAM meta"]
+    if idx and idx[0].samples:
+        samples = []
+        for t, raw in mp4index.read_samples(path, idx[0]):
+            s = _decode_djmd_fast(raw)
+            if s:
+                s.t = t
+                samples.append(s)
+        if samples:
+            return Track(samples, "embedded DJI telemetry")
+    return _read_embedded_demux(path)
+
+
+def _read_embedded_demux(path: str) -> Optional[Track]:
     with av.open(path) as c:
         streams = [s for s in c.streams if s.type == "data" and _is_djmd(s)]
         if not streams:
@@ -289,10 +378,9 @@ def read_embedded(path: str) -> Optional[Track]:
             if not p.size or p.pts is None:
                 continue
             try:
-                msg = pb_parse(bytes(p))
+                s = _decode_djmd_fast(bytes(p))
             except (ValueError, IndexError, struct.error):
                 continue
-            s = _decode_djmd_frame(msg)
             if s:
                 s.t = float(p.pts * p.time_base)
                 samples.append(s)
@@ -338,10 +426,56 @@ def read_srt(path: str) -> Optional[Track]:
     return Track(samples, "SRT captions") if samples else None
 
 
+CACHE_VERSION = 1
+
+
+def _cache_file(video_path: str) -> Optional[str]:
+    """Cache entry for this exact file (path, size and modification time)."""
+    try:
+        from .settings import cache_dir
+
+        st = os.stat(video_path)
+        key = "%s|%d|%d|%d" % (os.path.abspath(video_path), st.st_size, int(st.st_mtime), CACHE_VERSION)
+        return os.path.join(cache_dir(), "telemetry", hashlib.sha1(key.encode()).hexdigest() + ".json")
+    except OSError:
+        return None
+
+
+def _cache_load(path: Optional[str]) -> Optional[Track]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        samples = [Sample(*row) for row in d["samples"]]
+        return Track(samples, d["source"]) if samples else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _cache_save(path: Optional[str], track: Track, raw: list) -> None:
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        rows = [[s.t, s.lat, s.lon, s.alt, s.speed, s.yaw] for s in raw]
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"source": track.source, "samples": rows}, f, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as e:
+        log.info("Couldn't cache telemetry: %s", e)
+
+
 def load_track(video_path: str) -> Track:
-    """GPS track for a video: embedded DJI telemetry first, then a sidecar .SRT."""
+    """GPS track for a video: embedded DJI telemetry first, then a sidecar .SRT.
+    Embedded telemetry is cached, so opening the same clip again is instant."""
     if not os.path.exists(video_path):
         raise FileNotFoundError(video_path)
+    cache = _cache_file(video_path)
+    cached = _cache_load(cache)
+    if cached is not None:
+        return cached
     t = None
     try:
         t = read_embedded(video_path)
@@ -357,4 +491,6 @@ def load_track(video_path: str) -> Track:
         from .errors import NoTelemetryError
 
         raise NoTelemetryError()
+    if t.source == "embedded DJI telemetry":
+        _cache_save(cache, t, t.raw)
     return t

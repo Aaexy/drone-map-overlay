@@ -161,6 +161,15 @@ class JobRow(QFrame):
             self.status.setText("Downloading map tiles…")
             self.bar.setRange(0, 1000)
             self.bar.setValue(int(f * 1000))
+        elif stage == "finishing":
+            self.status.setText("Finishing up…")
+            self.bar.setRange(0, 0)
+            self.pct.setText("")
+        elif stage == "saving":
+            self.status.setText("Copying to the destination folder…")
+            self.bar.setRange(0, 1000)
+            self.bar.setValue(int(f * 1000))
+            self.pct.setText("%d%%" % (f * 100))
         else:
             if not self.started:
                 self.started = time.time()
