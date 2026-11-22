@@ -450,10 +450,10 @@ class SettingsDialog(QDialog):
     def _paint_streets_note(self, error=None):
         if not hasattr(self, "streets_note"):
             return
-        if error:
-            text = "⚠  " + error
-        elif not self.preview_path:
+        if not self.preview_path:  # the demo flight has no camera angles
             text = "Choose “Preview with a video…” to see them on your footage."
+        elif error:
+            text = "⚠  " + error
         else:
             text = ""
         self.streets_note.setText(text)
