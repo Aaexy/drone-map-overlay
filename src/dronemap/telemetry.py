@@ -310,13 +310,18 @@ def _decode_djmd_frame(msg):
         return Sample(0.0, lat, lon)
     if lat == 0.0 and lon == 0.0:
         return None
+    # Protobuf leaves out fields that are zero (landed: altitude 0, hovering: velocity 0,
+    # facing north: yaw 0), so in this known layout a missing value means 0.
     vx, vy = pb_get(drone, [2, 1]), pb_get(drone, [2, 2])
-    speed = math.hypot(vx, vy) if isinstance(vx, float) and isinstance(vy, float) else None
-    yaw = _s64(pb_get(drone, [3, 3]))
-    yaw = (yaw / 10.0) % 360 if isinstance(yaw, int) else None
-    alt = pb_get(drone, [5, 1])
-    alt = alt / 1000.0 if isinstance(alt, (int, float)) else None
-    return Sample(0.0, lat, lon, alt, speed, yaw)
+    return _known_sample(lat, lon, vx, vy, pb_get(drone, [3, 3]), pb_get(drone, [5, 1]))
+
+
+def _known_sample(lat, lon, vx, vy, yaw, alt) -> Sample:
+    vx = vx if isinstance(vx, float) else 0.0
+    vy = vy if isinstance(vy, float) else 0.0
+    yaw = (_s64(yaw) / 10.0) % 360 if isinstance(yaw, int) else 0.0
+    alt = _s64(alt) / 1000.0 if isinstance(alt, int) else (alt / 1000.0 if isinstance(alt, float) else 0.0)
+    return Sample(0.0, lat, lon, alt, math.hypot(vx, vy), yaw)
 
 
 def _is_djmd(stream):
@@ -338,13 +343,9 @@ def _decode_djmd_fast(raw: bytes) -> Optional[Sample]:
             return None
         vel = pb_path(drone, [2])
         vx, vy = (pb_path(vel, [1]), pb_path(vel, [2])) if vel is not None else (None, None)
-        speed = math.hypot(vx, vy) if isinstance(vx, float) and isinstance(vy, float) else None
         att = pb_path(drone, [3])
-        yaw = _s64(pb_path(att, [3])) if att is not None else None
-        yaw = (yaw / 10.0) % 360 if isinstance(yaw, int) else None
-        alt = pb_path(drone, [5, 1])
-        alt = alt / 1000.0 if isinstance(alt, (int, float)) else None
-        return Sample(0.0, lat, lon, alt, speed, yaw)
+        yaw = pb_path(att, [3]) if att is not None else None
+        return _known_sample(lat, lon, vx, vy, yaw, pb_path(drone, [5, 1]))
     except (ValueError, IndexError, struct.error):
         return None
 
@@ -426,7 +427,7 @@ def read_srt(path: str) -> Optional[Track]:
     return Track(samples, "SRT captions") if samples else None
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: missing (zero) protobuf fields read as 0
 
 
 def _cache_file(video_path: str) -> Optional[str]:

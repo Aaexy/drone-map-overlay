@@ -3,7 +3,7 @@ import struct
 import pytest
 
 from dronemap.errors import NoTelemetryError
-from dronemap.telemetry import Sample, Track, _decode_djmd_frame, drop_glitches, load_track, pb_parse, read_srt
+from dronemap.telemetry import Sample, Track, _decode_djmd_fast, _decode_djmd_frame, drop_glitches, load_track, pb_parse, read_srt
 
 
 # ------------------------------------------------------------------ protobuf builders
@@ -41,10 +41,10 @@ def djmd_packet(lat, lon, vx=3.0, vy=4.0, yaw_deci=1234, alt_mm=55500):
     """A packet laid out like the DJI Mini 5 Pro's dvtm_Mini5Pro.proto frames."""
     gps = _msg(1, _double(2, lat) + _double(3, lon)) + _int(2, 96000)
     drone = (
-        _msg(2, _float(1, vx) + _float(2, vy) + _float(3, 0.1))
-        + _msg(3, _int(1, -150) + _int(2, 20) + _int(3, yaw_deci))
+        _msg(2, (_float(1, vx) if vx else b"") + (_float(2, vy) if vy else b"") + _float(3, 0.1))
+        + _msg(3, _int(1, -150) + _int(2, 20) + (_int(3, yaw_deci) if yaw_deci else b""))
         + _msg(4, gps)
-        + _msg(5, _float(1, float(alt_mm)))
+        + _msg(5, _float(1, float(alt_mm)) if alt_mm else b"")
     )
     return _msg(3, _msg(1, _int(1, 1)) + _msg(3, drone))
 
@@ -59,6 +59,13 @@ def test_djmd_decode():
 
 def test_djmd_negative_yaw_wraps():
     assert _decode_djmd_frame(pb_parse(djmd_packet(10.0, 20.0, yaw_deci=-900))).yaw == pytest.approx(270.0)
+
+
+def test_djmd_zero_values_left_out_read_as_zero():
+    # protobuf omits zero fields: landed (altitude 0), hovering (no velocity), facing north
+    raw = djmd_packet(46.25, -71.5, vx=0.0, vy=0.0, yaw_deci=0, alt_mm=0)
+    for s in (_decode_djmd_frame(pb_parse(raw)), _decode_djmd_fast(raw)):
+        assert (s.alt, s.speed, s.yaw) == (0.0, 0.0, 0.0)
 
 
 def test_djmd_no_fix_is_skipped():
