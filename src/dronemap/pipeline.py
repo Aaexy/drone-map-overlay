@@ -219,6 +219,19 @@ def _rgba_frame(img: Image.Image, pts, tb) -> VideoFrame:
     return f
 
 
+# Full-frame layers are converted to the video's own pixel format (with alpha) on the worker
+# threads; left to the filter graph, that conversion runs on one core and slows 4K down.
+_ALPHA_FORMATS = {"yuv420p": "yuva420p", "yuvj420p": "yuva420p", "yuv420p10le": "yuva420p10le"}
+
+
+def _widget_frame(widget, t: float, fmt: Optional[str]) -> VideoFrame:
+    if fmt and hasattr(widget, "render_frame"):
+        return widget.render_frame(t, fmt)
+    img = widget.render(t)
+    f = VideoFrame.from_bytes(img.tobytes(), img.width, img.height, format="rgba")
+    return f.reformat(format=fmt) if fmt else f
+
+
 def _rotation_filters(rot: int) -> list[tuple[str, str]]:
     return {90: [("transpose", "clock")], 180: [("hflip", ""), ("vflip", "")], 270: [("transpose", "cclock")]}.get(rot, [])
 
@@ -263,7 +276,7 @@ def render_video(
 
     ov = Overlay(track, cfg, info.width, info.height)
     progress("map", 0.0)
-    ov.prefetch(lambda f: progress("map", f), cancelled)
+    ov.prefetch(lambda f: progress("map", f), cancelled, lambda f: progress("streets", f))
     if cancelled():
         raise Cancelled()
 
@@ -307,13 +320,16 @@ def render_video(
             last.link_to(node)
             last = node
         sources = []
+        main_fmt = vs.codec_context.pix_fmt or ""
         for p in ov.widgets:
             probe_img = p.widget.render(0.0)
-            buf = graph.add_buffer(width=probe_img.width, height=probe_img.height, format="rgba", time_base=vs.time_base)
+            full = p.name == "streets" and probe_img.width % 2 == 0 and probe_img.height % 2 == 0
+            fmt = _ALPHA_FORMATS.get(main_fmt) if full else None
+            buf = graph.add_buffer(width=probe_img.width, height=probe_img.height, format=fmt or "rgba", time_base=vs.time_base)
             node = graph.add("overlay", "x=%d:y=%d:format=auto:eof_action=repeat" % (p.x, p.y))
             last.link_to(node, 0, 0)
             buf.link_to(node, 0, 1)
-            sources.append((buf, p.widget))
+            sources.append((buf, p.widget, fmt))
             last = node
         fmt = graph.add("format", ost.pix_fmt)
         sink = graph.add("buffersink")
@@ -346,13 +362,15 @@ def render_video(
 
         def submit(frame, pool) -> None:
             t = float((frame.pts - start_pts) * frame.time_base)
-            pending.append((frame, [pool.submit(w.render, t) for _, w in sources]))
+            pending.append((frame, [pool.submit(_widget_frame, w, t, fmt) for _, w, fmt in sources]))
 
         def flush_one() -> None:
             frame, futures = pending.popleft()
             main_src.push(frame)
-            for (buf, _), fut in zip(sources, futures):
-                buf.push(_rgba_frame(fut.result(), frame.pts, frame.time_base))
+            for (buf, _, _), fut in zip(sources, futures):
+                f = fut.result()
+                f.pts, f.time_base = frame.pts, frame.time_base
+                buf.push(f)
             drain()
             state["frames"] += 1
             now = time.time()
@@ -382,7 +400,7 @@ def render_video(
                 flush_one()
         progress("finishing", 0.0)
         main_src.push(None)
-        for buf, _ in sources:
+        for buf, _, _ in sources:
             buf.push(None)
         drain()
         for pkt in ost.encode(None):
@@ -414,6 +432,8 @@ def render_video(
                 pass
         raise
 
+    if ov.streets_error():
+        warnings.append(ov.streets_error())
     failed = ov.failed_tiles()
     if failed:
         warnings.append(

@@ -33,6 +33,8 @@ class Sample:
     speed: Optional[float] = None  # horizontal speed, m/s
     yaw: Optional[float] = None  # heading in degrees, 0 = north, clockwise
     vs: Optional[float] = None  # vertical speed, m/s, positive = climbing
+    pitch: Optional[float] = None  # camera (gimbal) tilt in degrees, 0 = level, -90 = straight down
+    zoom: Optional[float] = None  # digital zoom factor, 1 = none
 
 
 MAX_SPEED = 120.0  # m/s; anything faster between two fixes is a GPS glitch, not flight
@@ -58,7 +60,7 @@ class Track:
     def __init__(self, samples: list[Sample], source: str):
         if not samples:
             raise ValueError("empty track")
-        self.raw = [Sample(s.t, s.lat, s.lon, s.alt, s.speed, s.yaw) for s in samples]
+        self.raw = [Sample(s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, None, s.pitch, s.zoom) for s in samples]
         self.samples = drop_glitches(sorted(samples, key=lambda s: s.t))
         self.source = source
         self._fill_missing()
@@ -313,7 +315,20 @@ def _decode_djmd_frame(msg):
     # Protobuf leaves out fields that are zero (landed: altitude 0, hovering: velocity 0,
     # facing north: yaw 0), so in this known layout a missing value means 0.
     vx, vy = pb_get(drone, [2, 1]), pb_get(drone, [2, 2])
-    return _known_sample(lat, lon, vx, vy, pb_get(drone, [3, 3]), pb_get(drone, [5, 1]))
+    s = _known_sample(lat, lon, vx, vy, pb_get(drone, [3, 3]), pb_get(drone, [5, 1]))
+    gimbal = pb_get(msg, [3, 4])
+    if gimbal is not None:
+        s.pitch = _deci(pb_get(gimbal, [3, 1]))
+    s.zoom = _zoom(pb_get(msg, [3, 2, 23, 1]))
+    return s
+
+
+def _deci(v) -> float:
+    return _s64(v) / 10.0 if isinstance(v, int) else 0.0
+
+
+def _zoom(v) -> float:
+    return float(v) if isinstance(v, (int, float)) and 1.0 <= v <= 50.0 else 1.0
 
 
 def _known_sample(lat, lon, vx, vy, yaw, alt) -> Sample:
@@ -345,7 +360,12 @@ def _decode_djmd_fast(raw: bytes) -> Optional[Sample]:
         vx, vy = (pb_path(vel, [1]), pb_path(vel, [2])) if vel is not None else (None, None)
         att = pb_path(drone, [3])
         yaw = pb_path(att, [3]) if att is not None else None
-        return _known_sample(lat, lon, vx, vy, yaw, pb_path(drone, [5, 1]))
+        s = _known_sample(lat, lon, vx, vy, yaw, pb_path(drone, [5, 1]))
+        gimbal = pb_path(raw, [3, 4])
+        if gimbal is not None:
+            s.pitch = _deci(pb_path(gimbal, [3, 1]))
+        s.zoom = _zoom(pb_path(raw, [3, 2, 23, 1]))
+        return s
     except (ValueError, IndexError, struct.error):
         return None
 
@@ -427,7 +447,7 @@ def read_srt(path: str) -> Optional[Track]:
     return Track(samples, "SRT captions") if samples else None
 
 
-CACHE_VERSION = 2  # 2: missing (zero) protobuf fields read as 0
+CACHE_VERSION = 3  # 2: missing (zero) protobuf fields read as 0; 3: camera tilt and zoom
 
 
 def _cache_file(video_path: str) -> Optional[str]:
@@ -448,7 +468,7 @@ def _cache_load(path: Optional[str]) -> Optional[Track]:
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
-        samples = [Sample(*row) for row in d["samples"]]
+        samples = [Sample(*row[:6], None, *row[6:]) for row in d["samples"]]
         return Track(samples, d["source"]) if samples else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -459,7 +479,7 @@ def _cache_save(path: Optional[str], track: Track, raw: list) -> None:
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        rows = [[s.t, s.lat, s.lon, s.alt, s.speed, s.yaw] for s in raw]
+        rows = [[s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, s.pitch, s.zoom] for s in raw]
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"source": track.source, "samples": rows}, f, separators=(",", ":"))

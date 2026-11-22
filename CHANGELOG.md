@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0
+
+### New
+
+- **Street names:** street lines and names drawn into the picture where the streets really
+  are, pinned to the ground as the drone moves, turns and tilts. Uses the camera angle and
+  zoom from DJI's telemetry, OpenStreetMap streets and terrain heights (downloaded once per
+  area and cached). Shown live in the settings preview; options for lines, names, colour,
+  thickness, text size, distance and a height fine-tune. Off by default.
+- **Presets:** save the look and layout under a name, switch between them from the settings
+  window, import and export them as files. Built-in starting points: Default, Minimal,
+  Satellite explorer, Night and Street explorer.
+- Command line: `--preset NAME`, `--list-presets`, `--streets` / `--no-streets`.
+
+### Fixed
+
+- Clips that end with the drone landed (or hovering, or facing exactly north) lost their
+  altitude, speed or heading for those moments: DJI's telemetry leaves out values that are
+  zero.
+
 ## 0.1.0
 
 First release.

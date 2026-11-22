@@ -22,6 +22,14 @@ macOS and Linux.
 - **Flight stats:** speed, altitude, vertical speed, heading, distance flown, distance from
   the start, time and coordinates, side by side (wrapping into a grid when crowded) or
   stacked, on a dark or light panel, in metric or imperial units.
+- **Street names (new):** lines and names of the streets drawn into the picture, right where
+  the streets are, like an augmented-reality map. They stay pinned to the ground as the
+  drone moves, turns and tilts, follow the terrain, take zoom into account and fade with
+  distance. Works with DJI drones that record the camera angle in the video (tested on the
+  Mini 5 Pro); uses OpenStreetMap data.
+- **Presets (new):** save your look and layout under a name and switch between them in one
+  click. Comes with a few to start from (Minimal, Satellite explorer, Night, Street
+  explorer); import and export them to share.
 - **Layout editor:** drag and resize the map and stats directly on a frame of your own
   video and scrub through time. **Reset positions** puts everything back; right-click a
   box to reset or hide just that one. Each box is pinned to a corner, edge
@@ -60,6 +68,24 @@ USB stick without leaving anything on the computer.
    (change the folder and file name ending in **Settings → Output**).
 3. Click **Settings** to change what's shown and to move or resize the map and stats on a
    frame of your own video. **Save & render** saves and starts rendering that video.
+4. **Presets** (top right of Settings) switches between saved looks and layouts; **Save as
+   preset…** saves the current one. Presets keep the map, stats, street names and look, not
+   the output folder.
+
+### Street names
+
+Turn on **Street names** in Settings, then **Preview with a video…** to see them on your own
+footage. The drone's position, height, heading, camera tilt and zoom come from the video's
+telemetry; street positions come from OpenStreetMap and ground heights from public terrain
+data, both downloaded once for the area and cached.
+
+- The drone's height is measured from where it took off, so the take-off ground height is
+  estimated from terrain data under the start of the clip. If the lines sit slightly above
+  or below the real streets (for example when the clip starts far from the take-off spot),
+  use **Height fine-tune** until they line up in the preview.
+- Lines are drawn on the ground, so they show through buildings and trees.
+- The camera's field of view is set for the DJI Mini 5 Pro (68° across the long side);
+  other drones can set `streets.fov` in the settings file.
 
 ### Command line
 
@@ -69,6 +95,9 @@ dronemap *.MP4                     # several at once
 dronemap VIDEO.MP4 --preview 12    # PNG of the frame at 12 s, to check the look
 dronemap VIDEO.MP4 --settings my-layout.json -o out.mp4
 dronemap VIDEO.MP4 --limit 10      # only the first 10 s, for a quick test
+dronemap VIDEO.MP4 --preset Minimal  # use a saved preset (name or .json file)
+dronemap VIDEO.MP4 --streets       # street names on (--no-streets: off) for this render
+dronemap --list-presets
 ```
 
 In the packaged app, use `"Drone Map Overlay" --cli ...` with the same options.
@@ -111,7 +140,9 @@ warning (hover it for details) and the log says why.
 | Satellite | [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) | Imagery © Esri, Maxar, Earthstar Geographics |
 
 Tiles are downloaded once for the area you flew and cached on your computer, so the tile
-server sees which area you requested. Both sources ask for credit when you publish: turn on
+server sees which area you requested. With street names on, the area is also sent to the
+[Overpass API](https://overpass-api.de/) (OpenStreetMap streets) and terrain tiles are read
+from [AWS Open Data](https://registry.opendata.aws/terrain-tiles/). Both sources ask for credit when you publish: turn on
 **Map credit** in Settings, or put the credit line in your video description. Esri's imagery
 is provided under [Esri's terms of use](https://www.esri.com/en-us/legal/terms/full-master-agreement);
 check them if you use satellite view commercially.
@@ -141,8 +172,10 @@ Project layout:
 | `src/dronemap/tiles.py` | Downloads, caches and stitches map tiles |
 | `src/dronemap/widgets.py` | Draws the map and stats widgets (thread-safe) |
 | `src/dronemap/layout.py`, `overlay.py` | Where widgets go on frames of any shape |
+| `src/dronemap/ar.py`, `streets.py` | Street names: camera path, projection and drawing; OpenStreetMap and terrain data |
 | `src/dronemap/pipeline.py`, `encoders.py` | Decode → overlay → encode (PyAV / FFmpeg), multi-threaded |
-| `src/dronemap/settings.py` | Settings, defaults, migration and where they're stored |
+| `src/dronemap/settings.py` | Settings, presets, defaults, migration and where they're stored |
+| `src/dronemap/assets/presets` | Built-in presets |
 | `src/dronemap/errors.py`, `logs.py` | Plain-language errors and the log file |
 | `src/dronemap/app/` | The desktop app (PySide6) |
 | `packaging/` | App build spec, launcher, icon and test-video generators |

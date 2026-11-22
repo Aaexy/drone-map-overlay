@@ -59,6 +59,19 @@ DEFAULTS: Settings = {
         "time": False,  # time since the start of the clip
         "coords": True,
     },
+    "streets": {
+        # Street lines and names drawn into the picture where the streets are (needs the
+        # camera angle, which DJI's embedded telemetry has; uses OpenStreetMap data).
+        "enabled": False,
+        "lines": True,
+        "names": True,
+        "line_color": "white",  # "white", "yellow", "accent" or "#rrggbb"
+        "line_width": 1.0,
+        "text_size": 1.0,
+        "max_distance": 800,  # metres: further streets fade out
+        "height_offset": 0.0,  # metres added to the drone's height, to fine-tune alignment
+        "fov": 68.0,  # camera field of view across the long side, degrees
+    },
     "style": {
         "accent": "#ff5c36",
         "panel_opacity": 0.8,
@@ -168,6 +181,13 @@ def normalize(raw: Settings) -> Settings:
             for st in ("light", "dark", "color"):
                 s["tiles"][st]["url"] = old_tiles["url"]
     m["zoom"] = _clamp_int(m.get("zoom"), 3, 19, DEFAULTS["map"]["zoom"])
+    st = s["streets"]
+    st["max_distance"] = _clamp_int(st.get("max_distance"), 100, 3000, DEFAULTS["streets"]["max_distance"])
+    for k, lo, hi in (("line_width", 0.3, 3.0), ("text_size", 0.5, 2.5), ("height_offset", -200.0, 200.0), ("fov", 20.0, 130.0)):
+        try:
+            st[k] = min(hi, max(lo, float(st[k])))
+        except (TypeError, ValueError):
+            st[k] = DEFAULTS["streets"][k]
     m["trail_seconds"] = _clamp_int(m.get("trail_seconds"), 1, 3600, DEFAULTS["map"]["trail_seconds"])
     s["version"] = VERSION
     return s
@@ -225,7 +245,7 @@ def save(s: Settings) -> None:
 # ---------------------------------------------------------------- presets
 # A preset is the look and layout of the overlay (map, stats, style), not per-computer
 # things like the output folder or the app theme, so presets can be shared.
-PRESET_SECTIONS = ("map", "stats", "style")
+PRESET_SECTIONS = ("map", "stats", "streets", "style")
 
 
 class PresetError(ValueError):

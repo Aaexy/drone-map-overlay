@@ -103,6 +103,10 @@ class SettingsDialog(QDialog):
         self.bg_item = QGraphicsPixmapItem()
         self.bg_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.scene.addItem(self.bg_item)
+        self.streets_item = QGraphicsPixmapItem()
+        self.streets_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self.streets_item.setZValue(0.5)
+        self.scene.addItem(self.streets_item)
         self.boxes = {}
         left.addWidget(self.view, 1)
         trow = QHBoxLayout()
@@ -185,6 +189,7 @@ class SettingsDialog(QDialog):
         form.setSpacing(12)
         form.addWidget(self._map_section())
         form.addWidget(self._stats_section())
+        form.addWidget(self._streets_section())
         form.addWidget(self._look_section())
         form.addWidget(self._output_section())
         form.addWidget(self._app_section())
@@ -396,6 +401,64 @@ class SettingsDialog(QDialog):
         s.row("Coordinates", self._toggle("stats", "coords"))
         return s
 
+    def _streets_section(self):
+        s = self.sections["streets"] = Section(
+            "Street names", self.cfg["streets"]["enabled"], lambda v: self._set("streets", "enabled", v)
+        )
+        self.streets_note = label("", "faint", wrap=True)
+        s.form.addWidget(
+            label(
+                "Lines and names of the streets drawn into the picture, where they really are. "
+                "Uses the camera angle recorded by DJI drones and OpenStreetMap data.",
+                "faint",
+                wrap=True,
+            )
+        )
+        s.form.addWidget(self.streets_note)
+        self._paint_streets_note()
+        s.row("Street lines", self._toggle("streets", "lines"))
+        s.row("Street names", self._toggle("streets", "names"))
+        s.wide(
+            "Line colour",
+            self._seg("streets", "line_color", [("White", "white"), ("Yellow", "yellow"), ("Accent", "accent")]),
+        )
+        s.row("Line thickness", self._slider("streets", "line_width", 50, 200, 100.0))
+        s.row("Text size", self._slider("streets", "text_size", 60, 180, 100.0))
+        dist = self._slider("streets", "max_distance", 200, 2000)
+        dist.setSingleStep(50)
+        s.row("How far", self._with_value(dist, lambda v: "%d m" % v))
+        h = self._slider("streets", "height_offset", -40, 40)
+        h.setToolTip(
+            "If the lines sit above or below the real streets (the drone's take-off height is\n"
+            "estimated from terrain data), nudge this until they line up in the preview."
+        )
+        s.row("Height fine-tune", self._with_value(h, lambda v: "%+d m" % v))
+        return s
+
+    def _with_value(self, slider, fmt):
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        v = label(fmt(slider.value()), "muted")
+        v.setMinimumWidth(44)
+        slider.valueChanged.connect(lambda x: v.setText(fmt(x)))
+        lay.addWidget(slider)
+        lay.addWidget(v)
+        return w
+
+    def _paint_streets_note(self, error=None):
+        if not hasattr(self, "streets_note"):
+            return
+        if error:
+            text = "⚠  " + error
+        elif not self.preview_path:
+            text = "Choose “Preview with a video…” to see them on your footage."
+        else:
+            text = ""
+        self.streets_note.setText(text)
+        self.streets_note.setVisible(bool(text))
+
     def _look_section(self):
         s = Section("Look")
         s.wide("Units", self._seg("style", "units", [("Metric  km/h · m", "metric"), ("Imperial  mph · ft", "imperial")]))
@@ -502,6 +565,7 @@ class SettingsDialog(QDialog):
         for name, title in (("map", "Map"), ("stats", "Stats")):
             if name not in self.boxes:
                 b = BoxItem(name, title, frame)
+                b.setZValue(1)
                 b.committed.connect(self.on_box_committed)
                 b.menu_requested.connect(self.box_menu)
                 self.scene.addItem(b)
@@ -566,10 +630,17 @@ class SettingsDialog(QDialog):
                 "Some map tiles couldn't be downloaded, so parts of the map are blank.\n"
                 "Check your internet connection.\n\nDetails: %s" % err
             )
+        self._paint_streets_note(d.get("streets_error"))
         shown = set()
         for name, img, margin in d["items"]:
+            if name == "streets":
+                self.streets_item.setPixmap(pil_to_pixmap(img))
+                shown.add(name)
+                continue
             self.boxes[name].set_pixmap(pil_to_pixmap(img), margin)
             shown.add(name)
+        if "streets" not in shown:
+            self.streets_item.setPixmap(QPixmap())
         for name, b in self.boxes.items():
             if name not in shown:
                 b.pix = None
@@ -630,6 +701,7 @@ class SettingsDialog(QDialog):
         self.offline = False
         self.bg_img = d["bg"]
         self.preview_label.setText(os.path.basename(d["path"]))
+        self._paint_streets_note()
         self.time_slider.blockSignals(True)
         self.time_slider.setValue(int(1000 * self.t / max(0.001, self.duration)))
         self.time_slider.blockSignals(False)

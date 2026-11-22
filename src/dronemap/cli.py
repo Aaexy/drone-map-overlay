@@ -20,6 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-o", "--output", help="output file (only with a single video)")
     ap.add_argument("--settings", metavar="JSON", help="settings file to use instead of the app's saved settings")
     ap.add_argument("--preset", metavar="NAME", help="use a saved preset's look and layout (a preset name or a .json file)")
+    ap.add_argument(
+        "--streets",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="draw street lines and names into the picture (or not), whatever the settings say",
+    )
     ap.add_argument("--list-presets", action="store_true", help="list the saved presets and exit")
     ap.add_argument("--preview", type=float, metavar="SECONDS", help="write a PNG of one frame instead of a video")
     ap.add_argument("--limit", type=float, metavar="SECONDS", help="only render the first SECONDS of each video")
@@ -53,6 +59,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         except settings_mod.PresetError as e:
             names = ", ".join(p["name"] for p in settings_mod.list_presets())
             ap.error("%s Available presets: %s" % (e, names))
+    if a.streets is not None:
+        cfg["streets"]["enabled"] = a.streets
 
     if a.preview is not None:
         from .pipeline import render_preview

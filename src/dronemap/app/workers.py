@@ -109,13 +109,22 @@ class WidgetPreviewJob(QRunnable):
 
         try:
             ov = Overlay(self.track, self.cfg, self.W, self.H, offline=self.offline)
+            if ov.streets is not None:
+                ov.streets.prefetch()  # instant once downloaded
             items = []
             for p in ov.widgets:
                 img = p.widget.render(self.t)
                 size = (max(1, int(img.width * self.scale)), max(1, int(img.height * self.scale)))
                 items.append((p.name, img.resize(size, Image.LANCZOS), p.widget.margin * self.scale))
             errors = [p.widget.tiles.last_error for p in ov.widgets if hasattr(p.widget, "tiles") and p.widget.tiles.failed]
-            self.signals.send(dict(token=self.token, items=items, tile_error=errors[0] if errors else None))
+            self.signals.send(
+                dict(
+                    token=self.token,
+                    items=items,
+                    tile_error=errors[0] if errors else None,
+                    streets_error=ov.streets_error(),
+                )
+            )
         except Exception as e:
             log.info("Preview render failed: %s", e)
             self.signals.send(dict(token=self.token, error=describe(e)[0]))

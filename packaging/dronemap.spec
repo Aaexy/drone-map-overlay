@@ -23,7 +23,7 @@ def license_files():
     py_license = os.path.join(sysconfig.get_paths()["stdlib"], "LICENSE.txt")
     if os.path.exists(py_license):
         out.append((py_license, os.path.join("licenses", "python")))
-    for dist in ("av", "pillow", "certifi"):
+    for dist in ("av", "pillow", "certifi", "numpy"):
         try:
             d = md.distribution(dist)
         except md.PackageNotFoundError:
@@ -40,7 +40,7 @@ a = Analysis(
     pathex=[os.path.join(ROOT, "src")],
     datas=[(os.path.join(ROOT, "src", "dronemap", "assets"), os.path.join("dronemap", "assets"))] + license_files(),
     hiddenimports=["dronemap.app", "dronemap.app.main_window", "dronemap.cli", "certifi"],
-    excludes=["tkinter", "numpy", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+    excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtMultimedia",
               "PySide6.QtPdf", "PySide6.QtCharts", "PySide6.QtDataVisualization"],
     noarchive=False,

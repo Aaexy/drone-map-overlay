@@ -56,5 +56,16 @@
     "roundness": 0.12,
     "shadow": true,
     "units": "metric"
+  },
+  "streets": {
+    "enabled": false,
+    "lines": true,
+    "names": true,
+    "line_color": "white",
+    "line_width": 1.0,
+    "text_size": 1.0,
+    "max_distance": 800,
+    "height_offset": 0.0,
+    "fov": 68.0
   }
 }
