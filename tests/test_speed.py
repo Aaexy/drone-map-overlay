@@ -92,7 +92,7 @@ def test_simplified_path_stays_within_tolerance():
     eps = 0.33
     idx, kept = _simplify_path(pts, 0.5, eps)
     assert len(kept) < len(pts) / 4
-    assert (idx[0] == 0 and idx[-1] == len(pts) - 1) or idx[-1] >= len(pts) - 2
+    assert idx[0] == 0 and idx[-1] >= len(pts) - 2  # keeps (nearly) both ends
     for i, p in enumerate(pts):
         j = max(0, min(len(idx) - 2, next((k for k, v in enumerate(idx) if v > i), len(idx)) - 1))
         d = min(_dist_to_segment(p, kept[j], kept[j + 1]), _dist_to_segment(p, kept[max(0, j - 1)], kept[j]))

@@ -38,12 +38,6 @@ def button(text: str, kind: Optional[str] = None, cb=None) -> QPushButton:
     return b
 
 
-def card() -> QFrame:
-    f = QFrame()
-    f.setProperty("role", "card")
-    return f
-
-
 class Toggle(QAbstractButton):
     """iOS-style switch."""
 

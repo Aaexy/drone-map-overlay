@@ -25,7 +25,6 @@ Settings = dict[str, Any]
 MAP_STYLES = ("light", "dark", "color", "satellite")
 _OSM = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 _OSM_CREDIT = "\u00a9 OpenStreetMap contributors"
-STATS_FIELDS = ("speed", "altitude", "vspeed", "heading", "distance", "home", "time", "coords")
 
 DEFAULTS: Settings = {
     "version": VERSION,

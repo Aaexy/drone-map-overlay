@@ -36,8 +36,8 @@ macOS and Linux.
 
 ## Download
 
-Each build produces, for every platform, an **installer** and a **portable** version
-(GitHub Actions → latest run → Artifacts; attached to tagged releases):
+Get the latest version from the **Releases** page. Each release has, for every platform, an
+**installer** and a **portable** version:
 
 | Platform | Installer | Portable |
 | --- | --- | --- |
@@ -54,10 +54,12 @@ USB stick without leaving anything on the computer.
 
 ## How to use
 
-1. Open the app and drop a video onto the window (or click **Choose video…**).
+1. Open the app and drop one or more videos (or a folder) onto the window, or click
+   **Choose videos…**.
 2. The finished copy is saved next to the original as `NAME_map.mp4`
    (change the folder and file name ending in **Settings → Output**).
-3. Click **Settings** to change what's shown and to move or resize the map and stats.
+3. Click **Settings** to change what's shown and to move or resize the map and stats on a
+   frame of your own video. **Save & render** saves and starts rendering that video.
 
 ### Command line
 
@@ -66,6 +68,7 @@ dronemap VIDEO.MP4                 # render with your saved settings
 dronemap *.MP4                     # several at once
 dronemap VIDEO.MP4 --preview 12    # PNG of the frame at 12 s, to check the look
 dronemap VIDEO.MP4 --settings my-layout.json -o out.mp4
+dronemap VIDEO.MP4 --limit 10      # only the first 10 s, for a quick test
 ```
 
 In the packaged app, use `"Drone Map Overlay" --cli ...` with the same options.
@@ -74,7 +77,10 @@ In the packaged app, use `"Drone Map Overlay" --cli ...` with the same options.
 
 - **macOS:** encoding uses Apple's hardware video encoder (VideoToolbox), tuned for
   throughput. On an M4 Pro, 4K/60 10-bit footage renders faster than real time
-  (a 16 s clip takes about 12–16 s).
+  (a 16 s clip takes about 12 s; a 6-minute clip from and to an SD card about 6 minutes).
+- When the output goes to a memory card or another drive, the video is rendered on the
+  internal disk and copied across while it renders, so the card is never written in small
+  pieces. GPS data is read straight from the video's index and cached.
 - **Windows and Linux:** encoding runs on the CPU (x265 / x264), so 4K takes longer.
 - The map and stats are drawn on several CPU cores in parallel, a few frames ahead of the
   encoder, and cost about 2 ms per frame at 4K.
@@ -91,7 +97,11 @@ click **Log** in the app (or open the file below) and include it when reporting 
 | Linux | `~/.local/state/DroneMapOverlay/dronemap.log` |
 
 Settings live in `settings.json` in `~/Library/Application Support/DroneMapOverlay` (macOS),
-`%APPDATA%\DroneMapOverlay` (Windows) or `~/.config/DroneMapOverlay` (Linux).
+`%APPDATA%\DroneMapOverlay` (Windows) or `~/.config/DroneMapOverlay` (Linux). The portable
+versions keep everything in the `data` folder next to the app instead.
+
+If the map stays blank, the map tiles couldn't be downloaded: the settings preview shows a
+warning (hover it for details) and the log says why.
 
 ## Map data and privacy
 
@@ -127,7 +137,7 @@ Project layout:
 
 | Path | What it does |
 | --- | --- |
-| `src/dronemap/telemetry.py` | Reads GPS from DJI's embedded `djmd` protobuf track or an `.SRT` file |
+| `src/dronemap/telemetry.py`, `mp4index.py` | Reads GPS from DJI's embedded `djmd` protobuf track (via the MP4 index) or an `.SRT` file |
 | `src/dronemap/tiles.py` | Downloads, caches and stitches map tiles |
 | `src/dronemap/widgets.py` | Draws the map and stats widgets (thread-safe) |
 | `src/dronemap/layout.py`, `overlay.py` | Where widgets go on frames of any shape |
@@ -135,10 +145,21 @@ Project layout:
 | `src/dronemap/settings.py` | Settings, defaults, migration and where they're stored |
 | `src/dronemap/errors.py`, `logs.py` | Plain-language errors and the log file |
 | `src/dronemap/app/` | The desktop app (PySide6) |
-| `packaging/` | App build spec, icon generator, test-video generator |
+| `packaging/` | App build spec, launcher, icon and test-video generators |
+| `packaging/windows`, `macos`, `linux` | Installer and package scripts (Inno Setup, disk image, AppImage, `.deb`) |
 
 Checks run on every push: `ruff check`, `ruff format --check` and the test suite on
-Windows, macOS and Linux, then each platform's app is built and test-renders a video.
+Windows, macOS and Linux. Then each platform's app is built and packaged, and every package
+is installed or run and test-renders a video.
+
+### Releasing
+
+1. Set the version in `src/dronemap/__init__.py` (the only place it's defined).
+2. Add a `## <version>` section to `CHANGELOG.md`; it becomes the release notes.
+3. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
+
+CI builds everything, checks that the tag matches the version, and publishes a GitHub Release
+with all the installers and portable versions attached.
 
 ### Adding another drone
 

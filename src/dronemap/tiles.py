@@ -47,10 +47,6 @@ def world_px(lat: float, lon: float, z: int):
     return x, y
 
 
-def metres_per_px(lat: float, z: int) -> float:
-    return 156543.03392 * math.cos(math.radians(lat)) / (1 << z)
-
-
 class TileSource:
     def __init__(self, url_template: str, z: int, mem_tiles: int = 256, post=None):
         self.post = post

@@ -16,7 +16,6 @@ log = logging.getLogger(__name__)
 class Candidate(NamedTuple):
     codec: str
     pix_fmt: str
-    hardware: bool
 
 
 def nominal_rate(stream) -> Fraction:
@@ -42,14 +41,14 @@ def candidates(src_codec: str, preference: str, ten_bit: bool) -> list[Candidate
     out: list[Candidate] = []
     if preference == "auto" and src_codec in ("hevc", "h265"):
         if sys.platform == "darwin":
-            out.append(Candidate("hevc_videotoolbox", "p010le" if ten_bit else "nv12", True))
-        out.append(Candidate("libx265", "yuv420p10le" if ten_bit else "yuv420p", False))
+            out.append(Candidate("hevc_videotoolbox", "p010le" if ten_bit else "nv12"))
+        out.append(Candidate("libx265", "yuv420p10le" if ten_bit else "yuv420p"))
     if sys.platform == "darwin":
-        out.append(Candidate("h264_videotoolbox", "nv12", True))
+        out.append(Candidate("h264_videotoolbox", "nv12"))
     out += [
-        Candidate("libx264", "yuv420p", False),
-        Candidate("libopenh264", "yuv420p", False),
-        Candidate("mpeg4", "yuv420p", False),
+        Candidate("libx264", "yuv420p"),
+        Candidate("libopenh264", "yuv420p"),
+        Candidate("mpeg4", "yuv420p"),
     ]
     return [c for c in out if _available(c.codec)]
 

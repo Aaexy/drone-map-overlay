@@ -191,11 +191,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        run: |
+          VERSION=$(python3 -c 'import sys; sys.path.insert(0, "src"); import dronemap; print(dronemap.__version__)')
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the app version ${VERSION} (src/dronemap/__init__.py)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="## ${VERSION}" '$0 == v {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "::error::No '## ${VERSION}' section in CHANGELOG.md"; exit 1; }
+          cat notes.md
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
+      - run: ls -la artifacts
+
       - uses: softprops/action-gh-release@v2
         with:
+          name: Drone Map Overlay ${{ env.VERSION }}
+          body_path: notes.md
           files: artifacts/*
-          generate_release_notes: true
+          fail_on_unmatched_files: true

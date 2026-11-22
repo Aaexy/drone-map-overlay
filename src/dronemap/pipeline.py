@@ -212,29 +212,6 @@ class _FollowCopy(threading.Thread):
             self.join()
 
 
-def _copy_with_progress(src: str, dst: str, progress: Callable[[float], None], cancelled: CancelCheck) -> None:
-    total = max(1, os.path.getsize(src))
-    done = 0
-    last = 0.0
-    with open(src, "rb") as fi, open(dst, "wb") as fo:
-        while True:
-            chunk = fi.read(16 * 1024 * 1024)
-            if not chunk:
-                break
-            fo.write(chunk)
-            done += len(chunk)
-            if cancelled():
-                raise Cancelled()
-            now = time.time()
-            if now - last > 0.1:
-                last = now
-                progress(done / total)
-        fo.flush()
-        os.fsync(fo.fileno())
-    shutil.copystat(src, dst)
-    progress(1.0)
-
-
 # ------------------------------------------------------------------ rendering
 def _rgba_frame(img: Image.Image, pts, tb) -> VideoFrame:
     f = VideoFrame.from_bytes(img.tobytes(), img.width, img.height, format="rgba")
