@@ -64,7 +64,8 @@ def test_render_via_local_staging(sample_video, tmp_path, monkeypatch):
     stages = []
     out = tmp_path / "out" / "result.mp4"
     res = pipeline.render_video(sample_video, str(out), offline_cfg(), lambda s, f: stages.append(s))
-    assert os.path.getsize(res.output) > 0
+    with av.open(res.output) as c:
+        assert sum(1 for _ in c.decode(c.streams.video[0])) == 60  # complete, valid file
     assert "saving" in stages and "finishing" in stages
     assert os.listdir(stage) == []  # staging file removed
     assert os.listdir(out.parent) == ["result.mp4"]  # no .part left behind

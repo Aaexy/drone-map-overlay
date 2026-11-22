@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -144,6 +145,73 @@ def _staging_dir(dest_folder: str, needed: int) -> Optional[str]:
     return local
 
 
+class _FollowCopy(threading.Thread):
+    """Copy a file to `dst` while it's still being written, in large sequential chunks.
+
+    The MP4 writer only ever appends, except for patching the box sizes in the first
+    few bytes when it closes, so after `finish()` the start of the file is copied again.
+    """
+
+    CHUNK = 16 * 1024 * 1024
+    HEAD = 1024 * 1024
+
+    def __init__(self, src: str, dst: str):
+        super().__init__(daemon=True, name="copy-to-destination")
+        self.src, self.dst = src, dst
+        self.writer_done = threading.Event()
+        self.abort = threading.Event()
+        self.copied = 0
+        self.error: Optional[BaseException] = None
+
+    def run(self) -> None:
+        try:
+            # The writer creates the file when it writes the first frame.
+            while not os.path.exists(self.src) and not self.abort.is_set() and not self.writer_done.is_set():
+                time.sleep(0.05)
+            if self.abort.is_set():
+                return
+            with open(self.src, "rb") as fi, open(self.dst, "wb") as fo:
+                while not self.abort.is_set():
+                    chunk = fi.read(self.CHUNK)
+                    if chunk:
+                        fo.write(chunk)
+                        self.copied += len(chunk)
+                    elif self.writer_done.is_set():
+                        break  # writer closed and we've reached the end
+                    else:
+                        time.sleep(0.2)
+        except BaseException as e:  # reported by finish()
+            self.error = e
+
+    def finish(self, progress: Callable[[float], None], cancelled: CancelCheck) -> None:
+        """Call after the writer has closed the file: wait for the tail, then fix the head."""
+        self.writer_done.set()
+        total = max(1, os.path.getsize(self.src))
+        while self.is_alive():
+            if cancelled():
+                self.abort.set()
+                self.join()
+                raise Cancelled()
+            progress(min(1.0, self.copied / total))
+            self.join(0.1)
+        if self.error is not None:
+            raise self.error
+        with open(self.src, "rb") as fi, open(self.dst, "r+b") as fo:
+            fo.write(fi.read(self.HEAD))
+            fo.flush()
+            os.fsync(fo.fileno())
+        if os.path.getsize(self.dst) != os.path.getsize(self.src):
+            raise OSError("copy to the destination folder is incomplete")
+        shutil.copystat(self.src, self.dst)
+        progress(1.0)
+
+    def stop(self) -> None:
+        self.abort.set()
+        self.writer_done.set()
+        if self.is_alive():
+            self.join()
+
+
 def _copy_with_progress(src: str, dst: str, progress: Callable[[float], None], cancelled: CancelCheck) -> None:
     total = max(1, os.path.getsize(src))
     done = 0
@@ -225,6 +293,7 @@ def render_video(
     warnings: list[str] = []
     inp = av.open(src)
     out = None
+    copier: Optional[_FollowCopy] = None
     try:
         vs = main_video_stream(inp)
         vs.thread_type = "AUTO"
@@ -237,6 +306,9 @@ def render_video(
         tmp = os.path.join(stage_dir, "dronemap-%d-%s.part" % (os.getpid(), os.path.basename(dst))) if stage_dir else final_tmp
         log.info("Writing to %s", "local staging file " + tmp if stage_dir else tmp)
         out, ost, cand = open_output(tmp, vs, cfg["output"].get("codec", "auto"), info.width, info.height)
+        if stage_dir:  # stream the file to its destination while it's being rendered
+            copier = _FollowCopy(tmp, final_tmp)
+            copier.start()
         created = inp.metadata.get("creation_time")
         if created:
             out.metadata["creation_time"] = created
@@ -343,11 +415,14 @@ def render_video(
         log.info("Finalising the file took %.1fs", time.time() - t_close)
         out = None
         inp.close()
-        if stage_dir:
-            _copy_with_progress(tmp, final_tmp, lambda f: progress("saving", f), cancelled)
+        if copier is not None:
+            copier.finish(lambda f: progress("saving", f), cancelled)
+            copier = None
             os.remove(tmp)
         os.replace(final_tmp, dst)
     except BaseException:
+        if copier is not None:
+            copier.stop()
         for c in (out, inp):
             try:
                 if c is not None:
