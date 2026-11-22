@@ -173,7 +173,8 @@ jobs:
           test -s smoke/appimage.mp4
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "./out/drone-map-overlay_${VERSION}_amd64.deb"
           ls -la /usr/bin/drone-map-overlay /opt/drone-map-overlay | head
-          timeout 240 drone-map-overlay --cli -v smoke/sample.mp4 --settings smoke/settings.json -o smoke/deb.mp4 </dev/null
+          # call the installed command explicitly: pip's dev install also provides one on PATH
+          timeout 240 /usr/bin/drone-map-overlay --cli -v smoke/sample.mp4 --settings smoke/settings.json -o smoke/deb.mp4 </dev/null
           test -s smoke/deb.mp4
           sudo apt-get remove -y drone-map-overlay
 

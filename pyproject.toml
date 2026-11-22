@@ -22,7 +22,7 @@ dev = ["pytest>=7", "pyinstaller>=6.5", "ruff==0.17.6"]
 dronemap = "dronemap.cli:main"
 
 [project.gui-scripts]
-drone-map-overlay = "dronemap.app:run"
+drone-map-overlay = "dronemap.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

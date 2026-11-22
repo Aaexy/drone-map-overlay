@@ -59,3 +59,15 @@ def run(files: Optional[list[str]] = None) -> int:
     if queued:
         QTimer.singleShot(200, lambda: w.add_files(queued))
     return app.exec()
+
+
+def main() -> int:
+    """Entry point of the app (packaged or installed): `--cli ...` runs the command line,
+    anything else opens the window and queues any video files given."""
+    args = sys.argv[1:]
+    if "--cli" in args:
+        args.remove("--cli")
+        from ..cli import main as cli
+
+        return cli(args)
+    return run(args)

@@ -7,17 +7,7 @@ Drone Map Overlay --cli ...       -> command-line mode (same options as `dronema
 
 import sys
 
-
-def main():
-    args = sys.argv[1:]
-    if args and args[0] == "--cli":
-        from dronemap.cli import main as cli
-
-        return cli(args[1:])
-    from dronemap.app import run
-
-    return run(args)
-
+from dronemap.app import main
 
 if __name__ == "__main__":
     sys.exit(main())
