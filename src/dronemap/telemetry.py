@@ -5,33 +5,56 @@ Sources, in order of preference:
      No sidecar file needed.
   2. A DJI .SRT caption file next to the video (enable "Video Subtitles" in DJI Fly).
 """
+
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
 import struct
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 import av
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
 class Sample:
-    t: float                      # seconds from start of video
+    t: float  # seconds from start of video
     lat: float
     lon: float
-    alt: Optional[float] = None   # metres above take-off
+    alt: Optional[float] = None  # metres above take-off
     speed: Optional[float] = None  # horizontal speed, m/s
-    yaw: Optional[float] = None    # heading in degrees, 0 = north, clockwise
+    yaw: Optional[float] = None  # heading in degrees, 0 = north, clockwise
+
+
+MAX_SPEED = 120.0  # m/s; anything faster between two fixes is a GPS glitch, not flight
+
+
+def drop_glitches(samples: list[Sample]) -> list[Sample]:
+    """Remove isolated GPS fixes that would need an impossible speed to reach.
+    Compared against the last *kept* sample, so a single bad fix can't poison the rest."""
+    if len(samples) < 3:
+        return samples
+    kept = [samples[0]]
+    for s in samples[1:]:
+        prev = kept[-1]
+        dt = max(s.t - prev.t, 1e-3)
+        if haversine(prev.lat, prev.lon, s.lat, s.lon) / dt <= MAX_SPEED + 30.0 / dt:
+            kept.append(s)
+    return kept if len(kept) >= max(2, len(samples) // 2) else samples
 
 
 class Track:
-    def __init__(self, samples: List[Sample], source: str):
+    """A time-ordered GPS track, with heading/speed filled in where the source lacks them."""
+
+    def __init__(self, samples: list[Sample], source: str):
         if not samples:
             raise ValueError("empty track")
-        self.samples = sorted(samples, key=lambda s: s.t)
+        self.samples = drop_glitches(sorted(samples, key=lambda s: s.t))
         self.source = source
         self._fill_missing()
         self.dist = [0.0]
@@ -91,8 +114,14 @@ class Track:
         yaw = None
         if a.yaw is not None and b.yaw is not None:
             yaw = (a.yaw + ((b.yaw - a.yaw + 180) % 360 - 180) * u) % 360
-        out = Sample(t, lerp(a.lat, b.lat), lerp(a.lon, b.lon), lerp(a.alt, b.alt),
-                     lerp(a.speed, b.speed), yaw if yaw is not None else a.yaw)
+        out = Sample(
+            t,
+            lerp(a.lat, b.lat),
+            lerp(a.lon, b.lon),
+            lerp(a.alt, b.alt),
+            lerp(a.speed, b.speed),
+            yaw if yaw is not None else a.yaw,
+        )
         return out, lo, lerp(self.dist[lo], self.dist[hi])
 
 
@@ -162,7 +191,7 @@ def pb_parse(b: bytes):
             ln, i = _varint(b, i)
             if i + ln > n:
                 raise ValueError("short")
-            v = b[i:i + ln]
+            v = b[i : i + ln]
             i += ln
             if v:
                 try:
@@ -195,10 +224,9 @@ def _find_latlon(t, depth=0):
         return None
     doubles = [v for f, v in t if isinstance(v, float)]
     for a, b in zip(doubles, doubles[1:]):
-        if -90 <= a <= 90 and -180 <= b <= 180 and (abs(a) > 1e-6 or abs(b) > 1e-6) \
-                and a != int(a) and b != int(b):
+        if -90 <= a <= 90 and -180 <= b <= 180 and (abs(a) > 1e-6 or abs(b) > 1e-6) and a != int(a) and b != int(b):
             return a, b
-    for f, v in t:
+    for _f, v in t:
         if isinstance(v, list):
             r = _find_latlon(v, depth + 1)
             if r:
@@ -230,7 +258,7 @@ def _decode_djmd_frame(msg):
 
 
 def _is_djmd(stream):
-    tag = (getattr(stream, "codec_tag", "") or "")
+    tag = getattr(stream, "codec_tag", "") or ""
     handler = stream.metadata.get("handler_name", "")
     return tag == "djmd" or handler.strip() == "CAM meta"
 
@@ -296,17 +324,22 @@ def read_srt(path: str) -> Optional[Track]:
 
 
 def load_track(video_path: str) -> Track:
+    """GPS track for a video: embedded DJI telemetry first, then a sidecar .SRT."""
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(video_path)
     t = None
     try:
         t = read_embedded(video_path)
-    except av.FFmpegError:
-        t = None
+    except av.error.InvalidDataError:
+        raise  # not a readable video at all: say that, not "no GPS"
+    except av.FFmpegError as e:
+        log.info("No embedded telemetry readable in %s: %s", video_path, e)
     if t is None:
         srt = find_srt(video_path)
         if srt:
             t = read_srt(srt)
     if t is None:
-        raise ValueError(
-            "No GPS data found. This video has no embedded DJI telemetry and no matching "
-            ".SRT file. On DJI drones, turn on Camera settings > Video Subtitles before recording.")
+        from .errors import NoTelemetryError
+
+        raise NoTelemetryError()
     return t

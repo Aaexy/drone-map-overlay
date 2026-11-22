@@ -1,8 +1,9 @@
 """Generate src/dronemap/assets/icon.png (1024x1024). Run: python packaging/make_icon.py"""
+
 import math
 import os
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 N, AA = 1024, 2
 S = N * AA
@@ -44,7 +45,7 @@ ImageDraw.Draw(glow).ellipse([cx - halo, cy - halo, cx + halo, cy + halo], fill=
 img.alpha_composite(glow)
 d = ImageDraw.Draw(img)
 d.polygon([R(0, -L), R(0.75 * L, 0.8 * L), R(0, 0.38 * L), R(-0.75 * L, 0.8 * L)], fill=(255, 255, 255, 255))
-d.polygon([R(0, -L * .6), R(.43 * L, .52 * L), R(0, .22 * L), R(-.43 * L, .52 * L)], fill=accent)
+d.polygon([R(0, -L * 0.6), R(0.43 * L, 0.52 * L), R(0, 0.22 * L), R(-0.43 * L, 0.52 * L)], fill=accent)
 out = img.resize((N, N), Image.LANCZOS)
 here = os.path.dirname(os.path.abspath(__file__))
 out.save(os.path.join(here, "..", "src", "dronemap", "assets", "icon.png"))

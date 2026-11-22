@@ -13,7 +13,7 @@ a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
     pathex=[os.path.join(ROOT, "src")],
     datas=[(os.path.join(ROOT, "src", "dronemap", "assets"), os.path.join("dronemap", "assets"))],
-    hiddenimports=["dronemap.gui", "dronemap.cli"],
+    hiddenimports=["dronemap.app", "dronemap.app.main_window", "dronemap.cli"],
     excludes=["tkinter", "numpy", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtMultimedia",
               "PySide6.QtPdf", "PySide6.QtCharts", "PySide6.QtDataVisualization"],

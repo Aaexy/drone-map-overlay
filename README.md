@@ -17,10 +17,14 @@ macOS and Linux.
   north-up or direction-of-flight-up, standard / grayscale / dark map styles.
 - **Flight stats panel** with metric or imperial units.
 - **Layout editor:** drag and resize the map and stats directly on a frame of your own
-  video, scrub through time, pick an accent colour. Layout is stored relative to the
-  frame, so it fits any resolution or aspect ratio.
+  video, scrub through time, pick an accent colour. Each box is pinned to a corner, edge
+  or the centre, so one layout works for landscape, vertical (9:16) and square videos at
+  any resolution.
 - **Keeps your quality:** 10-bit HEVC in, 10-bit HEVC out at the original bitrate
-  (or H.264 for maximum compatibility). Audio is copied as-is.
+  (or H.264 for maximum compatibility). Audio, colour information and the recording date
+  are kept; rotated phone-style videos come out upright.
+- **Robust:** handles dropped frames and GPS glitches, never overwrites your original, only
+  writes the finished file once it's complete, and checks free disk space first.
 - Drop several videos (or a whole folder) to queue them.
 
 ## Download
@@ -52,10 +56,26 @@ In the packaged app, use `"Drone Map Overlay" --cli ...` with the same options.
 
 ## Speed and hardware
 
-- On macOS, encoding uses the hardware video encoder (VideoToolbox). A 16 s 4K/60 clip
-  renders in roughly 35 s on Apple Silicon.
-- On Windows and Linux, encoding runs on the CPU (x265 / x264), so 4K takes longer.
-- Decoding and drawing the overlay run on the CPU on all platforms.
+- **macOS:** encoding uses Apple's hardware video encoder (VideoToolbox), tuned for
+  throughput. On an M4 Pro, 4K/60 10-bit footage renders faster than real time
+  (a 16 s clip takes about 12–16 s).
+- **Windows and Linux:** encoding runs on the CPU (x265 / x264), so 4K takes longer.
+- The map and stats are drawn on several CPU cores in parallel, a few frames ahead of the
+  encoder, and cost about 2 ms per frame at 4K.
+
+## Troubleshooting
+
+If a video can't be processed, the app says why in plain language. For anything else,
+click **Log** in the app (or open the file below) and include it when reporting a problem:
+
+| | Log file |
+| --- | --- |
+| macOS | `~/Library/Logs/DroneMapOverlay/dronemap.log` |
+| Windows | `%LOCALAPPDATA%\DroneMapOverlay\logs\dronemap.log` |
+| Linux | `~/.local/state/DroneMapOverlay/dronemap.log` |
+
+Settings live in `settings.json` in `~/Library/Application Support/DroneMapOverlay` (macOS),
+`%APPDATA%\DroneMapOverlay` (Windows) or `~/.config/DroneMapOverlay` (Linux).
 
 ## Map data and privacy
 
@@ -87,11 +107,16 @@ Project layout:
 | --- | --- |
 | `src/dronemap/telemetry.py` | Reads GPS from DJI's embedded `djmd` protobuf track or an `.SRT` file |
 | `src/dronemap/tiles.py` | Downloads, caches and stitches map tiles |
-| `src/dronemap/render.py` | Draws the map and stats widgets |
-| `src/dronemap/encode.py` | Decode → overlay → encode pipeline (PyAV / FFmpeg) |
-| `src/dronemap/gui.py`, `theme.py` | The desktop app (PySide6) |
-| `src/dronemap/settings.py` | Settings and where they're stored |
+| `src/dronemap/widgets.py` | Draws the map and stats widgets (thread-safe) |
+| `src/dronemap/layout.py`, `overlay.py` | Where widgets go on frames of any shape |
+| `src/dronemap/pipeline.py`, `encoders.py` | Decode → overlay → encode (PyAV / FFmpeg), multi-threaded |
+| `src/dronemap/settings.py` | Settings, defaults, migration and where they're stored |
+| `src/dronemap/errors.py`, `logs.py` | Plain-language errors and the log file |
+| `src/dronemap/app/` | The desktop app (PySide6) |
 | `packaging/` | App build spec, icon generator, test-video generator |
+
+Checks run on every push: `ruff check`, `ruff format --check` and the test suite on
+Windows, macOS and Linux, then each platform's app is built and test-renders a video.
 
 ### Adding another drone
 

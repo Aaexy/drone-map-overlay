@@ -15,13 +15,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pyinstaller>=6.5"]
+dev = ["pytest>=7", "pyinstaller>=6.5", "ruff==0.17.6"]
 
 [project.scripts]
 dronemap = "dronemap.cli:main"
 
 [project.gui-scripts]
-drone-map-overlay = "dronemap.gui:run"
+drone-map-overlay = "dronemap.app:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -31,3 +31,23 @@ dronemap = ["assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py39"
+extend-exclude = ["packaging/dronemap.spec"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM", "RUF"]
+ignore = [
+    "E731",    # small lambdas are clearer than defs in a few places
+    "UP007",   # Optional[...] is needed while we support Python 3.9
+    "UP045",
+    "SIM108",
+    "RUF001", "RUF002", "RUF003",  # unicode punctuation in UI text is intentional
+    "RUF012",
+    "UP031",   # %-formatting is used deliberately for compact UI strings
+    "RUF005",
+    "SIM105",
+    "RUF046",
+]

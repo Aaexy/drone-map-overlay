@@ -1,62 +1,98 @@
-"""Command-line interface: `dronemap VIDEO [VIDEO ...]` (no arguments opens the app)."""
+"""Command line: `dronemap VIDEO [VIDEO ...]`. With no videos, opens the app."""
+
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
-import time
+from typing import Optional
 
-from . import __version__
+from . import __version__, logs
 from . import settings as settings_mod
+from .errors import describe, log_failure
+
+log = logging.getLogger(__name__)
 
 
-def main(argv=None):
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="dronemap", description="Burn a live GPS map and flight stats into drone videos.")
-    ap.add_argument("videos", nargs="*", help="video files (none = open the app)")
+    ap.add_argument("videos", nargs="*", help="video files (none: open the app)")
     ap.add_argument("-o", "--output", help="output file (only with a single video)")
-    ap.add_argument("--settings", help="settings JSON file (default: the app's saved settings)")
+    ap.add_argument("--settings", metavar="JSON", help="settings file to use instead of the app's saved settings")
     ap.add_argument("--preview", type=float, metavar="SECONDS", help="write a PNG of one frame instead of a video")
-    ap.add_argument("--version", action="version", version=__version__)
+    ap.add_argument("-v", "--verbose", action="store_true", help="print detailed progress information")
+    ap.add_argument("--version", action="version", version="%(prog)s " + __version__)
+    return ap
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = build_parser()
     a = ap.parse_args(argv)
-
     if not a.videos:
-        from .gui import run
-        return run()
+        from .app import run
 
-    cfg = settings_mod.load()
-    if a.settings:
-        import json
-        with open(a.settings, encoding="utf-8") as f:
-            cfg = settings_mod._merge(settings_mod.DEFAULTS, json.load(f))
+        return run()
+    if a.output and len(a.videos) > 1:
+        ap.error("--output only works with one video")
+    logs.setup(verbose=a.verbose, to_stderr=True)
+
+    try:
+        cfg = settings_mod.load_file(a.settings) if a.settings else settings_mod.load()
+    except (OSError, ValueError) as e:
+        ap.error("can't read settings file: %s" % e)
 
     if a.preview is not None:
-        from .encode import render_preview
+        from .pipeline import render_preview
+
         for v in a.videos:
-            img, _ = render_preview(v, cfg, t=a.preview)
+            try:
+                img, _ = render_preview(v, cfg, t=a.preview)
+            except Exception as e:
+                return _fail(v, e)
             out = a.output or v.rsplit(".", 1)[0] + "_preview.png"
             img.convert("RGB").save(out)
             print(out)
         return 0
 
-    from .encode import render_video
-    if a.output and len(a.videos) > 1:
-        ap.error("--output only works with one video")
+    from .pipeline import render_video
+
     rc = 0
     for v in a.videos:
-        t0 = time.time()
-        last = [""]
-
-        def prog(stage, f):
-            line = "\r%-9s %5.1f%%" % (stage, f * 100)
-            if line != last[0]:
-                sys.stderr.write(line)
-                last[0] = line
-
         try:
-            out = render_video(v, a.output, cfg, prog)
-            sys.stderr.write("\r")
-            print("%s  (%.0fs)" % (out, time.time() - t0))
+            res = render_video(v, a.output, cfg, _progress_printer())
+        except KeyboardInterrupt:
+            sys.stderr.write("\rCancelled.          \n")
+            return 130
         except Exception as e:
-            sys.stderr.write("\r")
-            print("%s: %s" % (v, e), file=sys.stderr)
-            rc = 1
+            rc = _fail(v, e)
+            continue
+        sys.stderr.write("\r" + " " * 20 + "\r")
+        print("%s  (%d frames in %.0fs, %s)" % (res.output, res.frames, res.seconds, res.encoder))
+        for w in res.warnings:
+            print("  warning: " + w, file=sys.stderr)
     return rc
+
+
+def _progress_printer():
+    last = [""]
+
+    def prog(stage: str, f: float) -> None:
+        line = "\r%-9s %5.1f%%" % (stage, f * 100)
+        if line != last[0]:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            last[0] = line
+
+    return prog
+
+
+def _fail(video: str, e: BaseException) -> int:
+    sys.stderr.write("\r")
+    msg, hint = describe(e)
+    log_failure(log, "%s failed" % video, e)
+    print("%s: %s" % (video, msg), file=sys.stderr)
+    if hint:
+        print("  " + hint, file=sys.stderr)
+    if not hint or "log" in hint:
+        print("  (%s: %s)" % (type(e).__name__, e), file=sys.stderr)
+    return 1

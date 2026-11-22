@@ -1,4 +1,5 @@
 """Slippy-map tiles: download once, cache on disk, stitch any region on demand."""
+
 from __future__ import annotations
 
 import math
@@ -8,7 +9,7 @@ import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from . import __version__
 from .settings import cache_dir
@@ -37,7 +38,7 @@ class TileSource:
         self.url = url_template
         self.z = z
         self.dir = os.path.join(cache_dir(), "tiles", _slug(url_template), str(z))
-        self.mem: "OrderedDict[tuple, Image.Image]" = OrderedDict()
+        self.mem: OrderedDict[tuple, Image.Image] = OrderedDict()
         self.mem_tiles = mem_tiles
         self.lock = threading.Lock()
         self.failed = 0
@@ -155,18 +156,20 @@ class PlaceholderTiles(TileSource):
 
     def tile(self, x, y):
         key = (x, y)
-        im = self.mem.get(key)
-        if im is None:
-            from PIL import ImageDraw
-            im = Image.new("RGB", (TILE, TILE), (232, 229, 222))
-            d = ImageDraw.Draw(im)
-            if (x * 7 + y * 3) % 5 == 0:
-                d.rectangle([40, 50, 150, 140], fill=(205, 230, 190))
-            if (x + y) % 4 == 1:
-                d.rectangle([130, 20, 230, 90], fill=(216, 208, 200))
-            d.line([(0, 128), (TILE, 128)], fill=(255, 255, 255), width=14)
-            d.line([(128, 0), (128, TILE)], fill=(255, 255, 255), width=10)
-            if self.post:
-                im = self.post(im)
+        with self.lock:
+            im = self.mem.get(key)
+        if im is not None:
+            return im
+        im = Image.new("RGB", (TILE, TILE), (232, 229, 222))
+        d = ImageDraw.Draw(im)
+        if (x * 7 + y * 3) % 5 == 0:
+            d.rectangle([40, 50, 150, 140], fill=(205, 230, 190))
+        if (x + y) % 4 == 1:
+            d.rectangle([130, 20, 230, 90], fill=(216, 208, 200))
+        d.line([(0, 128), (TILE, 128)], fill=(255, 255, 255), width=14)
+        d.line([(128, 0), (128, TILE)], fill=(255, 255, 255), width=10)
+        if self.post:
+            im = self.post(im)
+        with self.lock:
             self.mem[key] = im
         return im
