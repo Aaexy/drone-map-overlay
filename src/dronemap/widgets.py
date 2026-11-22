@@ -51,6 +51,60 @@ def _simplify(points: Sequence[Point], min_step: float) -> tuple[list[int], list
     return idx, out
 
 
+def _rdp(points: Sequence[Point], eps: float) -> list[int]:
+    """Douglas-Peucker: indices of the points needed to keep the line within `eps` of the
+    original. Straight stretches collapse to their ends; curves keep their detail."""
+    n = len(points)
+    if n < 3:
+        return list(range(n))
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    e2 = eps * eps
+    while stack:
+        a, b = stack.pop()
+        ax, ay = points[a]
+        bx, by = points[b]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        worst, wi = -1.0, -1
+        for i in range(a + 1, b):
+            px, py = points[i]
+            if L2 == 0:
+                d2 = (px - ax) ** 2 + (py - ay) ** 2
+            else:
+                c = (px - ax) * dy - (py - ay) * dx
+                d2 = c * c / L2
+            if d2 > worst:
+                worst, wi = d2, i
+        if worst > e2:
+            keep[wi] = True
+            stack.append((a, wi))
+            stack.append((wi, b))
+    return [i for i in range(n) if keep[i]]
+
+
+def _simplify_path(points: Sequence[Point], min_step: float, eps: float) -> tuple[list[int], list[Point]]:
+    """Min-distance thinning, then Douglas-Peucker; returns kept points + original indices."""
+    idx, pts = _simplify(points, min_step)
+    keep = _rdp(pts, eps)
+    return [idx[i] for i in keep], [pts[i] for i in keep]
+
+
+def _chunks(pts: Sequence[Point], size: int = 48) -> list[tuple[int, int, float, float, float, float]]:
+    """(first, last, minx, miny, maxx, maxy) for overlapping runs of the path, so a frame
+    only transforms the parts of a long flight that are near the view."""
+    out = []
+    i = 0
+    while i < len(pts) - 1:
+        j = min(len(pts) - 1, i + size)
+        xs = [p[0] for p in pts[i : j + 1]]
+        ys = [p[1] for p in pts[i : j + 1]]
+        out.append((i, j, min(xs), min(ys), max(xs), max(ys)))
+        i = j
+    return out
+
+
 def _visible_runs(pts: Sequence[Point], w: float, h: float, pad: float) -> list[list[Point]]:
     """Split a screen-space polyline into runs that touch the visible area, so long
     flights don't cost thousands of off-screen line joints per frame."""
@@ -121,8 +175,11 @@ class MapWidget:
             self.tiles = TileSource(source["url"], z, post=tile_style(map_style))
 
         self.world = [world_px(s.lat, s.lon, z) for s in track.samples]
-        self.path_idx, self.path_pts = _simplify(self.world, self.PATH_STEP / k)
-        self.route_pts = _simplify(self.world, 3 * self.PATH_STEP / k)[1]
+        # Path within a third of a screen pixel of the GPS track, in as few points as possible.
+        self.path_idx, self.path_pts = _simplify_path(self.world, self.PATH_STEP / k, 0.33 / k)
+        self.path_chunks = _chunks(self.path_pts)
+        self.route_pts = _simplify_path(self.world, 3 * self.PATH_STEP / k, 0.5 / k)[1]
+        self.route_chunks = _chunks(self.route_pts)
 
         m = min(self.w, self.h)
         self.S = m / 620.0  # design units: the look was drawn for a 620 px map
@@ -217,12 +274,13 @@ class MapWidget:
             )
         pad = 40 * S * SS
         if self.show_route and len(self.route_pts) > 1:
-            for run in _visible_runs([P(p) for p in self.route_pts], w * SS, h * SS, pad):
+            n_all = len(self.route_pts)
+            for run in self._near_view(self.route_pts, self.route_chunks, n_all, P, w * SS, h * SS, pad, (cx, cy)):
                 dr.line(run, fill=(*self.ink, 150 if self.ink[0] else 90), width=max(2, int(6 * S * SS)), joint="curve")
         halo = 46 * S * SS
         dr.ellipse([hx - halo, hy - halo, hx + halo, hy + halo], fill=(*self.accent, 70))
         if self.trail != "off":
-            self._draw_trail(dr, P, t, idx, (hx, hy), w * SS, h * SS, pad)
+            self._draw_trail(dr, P, t, idx, (hx, hy), w * SS, h * SS, pad, (cx, cy))
         self._draw_marker(dr, hx, hy, screen_yaw)
         img.alpha_composite(downsample(layer, SS))
 
@@ -238,7 +296,7 @@ class MapWidget:
         out.alpha_composite(img, (self.margin, self.margin))
         return out
 
-    def _draw_trail(self, dr, P, t: float, idx: int, head: Point, w: float, h: float, pad: float) -> None:
+    def _draw_trail(self, dr, P, t: float, idx: int, head: Point, w: float, h: float, pad: float, center: Point) -> None:
         S, SS = self.S, self.SS
         n = bisect_right(self.path_idx, idx)
         if self.trail == "recent":
@@ -247,17 +305,48 @@ class MapWidget:
             start, _, _ = self.track.at(t0)
             pts = [P(world_px(start.lat, start.lon, self.z))] + [P(p) for p in self.path_pts[n0:n]] + [head]
         else:
-            pts = [P(p) for p in self.path_pts[:n]] + [head]
-        for run in _visible_runs(pts, w, h, pad):
-            if len(run) > 1:
-                dr.line(run, fill=(255, 255, 255, 255), width=max(3, int(15 * S * SS)), joint="curve")
-                dr.line(run, fill=(*self.accent, 255), width=max(2, int(9 * S * SS)), joint="curve")
-        if self.trail == "full":
+            runs = self._near_view(self.path_pts, self.path_chunks, n, P, w, h, pad, center)
+            last = self.path_pts[n - 1] if n else None
+            if last is not None:
+                if runs and runs[-1][-1] == P(last):
+                    runs[-1].append(head)
+                else:
+                    runs.append([P(last), head])
+            self._stroke(dr, runs)
             sx, sy = P(self.world[0])
             r = 11 * S * SS
             dr.ellipse(
                 [sx - r, sy - r, sx + r, sy + r], fill=(255, 255, 255), outline=(30, 30, 30), width=max(1, int(3 * S * SS))
             )
+            return
+        self._stroke(dr, _visible_runs(pts, w, h, pad))
+
+    def _near_view(self, pts, chunks, n: int, P, w: float, h: float, pad: float, center: Point) -> list[list[Point]]:
+        """Screen-space runs of pts[:n], transforming only chunks near the view."""
+        r = (math.hypot(w, h) / 2 + pad) / (self.k * self.SS)
+        cx, cy = center
+        runs: list[list[Point]] = []
+        prev_end = -1
+        for i0, i1, x0, y0, x1, y1 in chunks:
+            if i0 >= n - 1:
+                break
+            if x1 < cx - r or x0 > cx + r or y1 < cy - r or y0 > cy + r:
+                continue
+            end = min(i1, n - 1)
+            seg = [P(p) for p in pts[i0 : end + 1]]
+            if runs and i0 == prev_end:
+                runs[-1].extend(seg[1:])
+            else:
+                runs.append(seg)
+            prev_end = end
+        return runs
+
+    def _stroke(self, dr, runs) -> None:
+        S, SS = self.S, self.SS
+        for run in runs:
+            if len(run) > 1:
+                dr.line(run, fill=(255, 255, 255, 255), width=max(3, int(15 * S * SS)), joint="curve")
+                dr.line(run, fill=(*self.accent, 255), width=max(2, int(9 * S * SS)), joint="curve")
 
     def _draw_marker(self, dr, hx: float, hy: float, screen_yaw: float) -> None:
         S, SS = self.S, self.SS
