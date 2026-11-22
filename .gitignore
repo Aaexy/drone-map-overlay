@@ -1,0 +1,23 @@
+# local stuff
+local/
+.venv/
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.SRT
+!tests/**
+
+# python / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# OS / editors
+.DS_Store
+._*
+.idea/
+.vscode/

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-map-overlay"
+version = "0.1.0"
+description = "Burn a live GPS map and flight stats into drone videos (DJI telemetry or .SRT)."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "av>=14",
+    "Pillow>=10.1",
+    "PySide6>=6.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pyinstaller>=6.5"]
+
+[project.scripts]
+dronemap = "dronemap.cli:main"
+
+[project.gui-scripts]
+drone-map-overlay = "dronemap.gui:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dronemap = ["assets/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
