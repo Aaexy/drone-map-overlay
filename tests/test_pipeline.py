@@ -47,6 +47,18 @@ def test_dropped_frames_keep_their_timestamps(tmp_path):
     assert out_t == pytest.approx(src_t, abs=1e-3)
 
 
+def make_rotated(src, dst, ccw):
+    """Copy `src` with a display rotation of `ccw` degrees counter-clockwise. FFmpeg 6+ has
+    -display_rotation; older versions (e.g. 4.4 on Ubuntu 22.04) use a clockwise "rotate" tag."""
+    base = ["ffmpeg", "-v", "error", "-y"]
+    new = subprocess.run([*base, "-display_rotation:v:0", str(ccw), "-i", src, "-c", "copy", dst], capture_output=True)
+    if new.returncode != 0:
+        cw = (360 - ccw) % 360
+        subprocess.run([*base, "-i", src, "-c", "copy", "-metadata:s:v:0", "rotate=%d" % cw, dst], check=True)
+    if probe(dst).rotation == 0:
+        pytest.skip("this ffmpeg can't write rotation metadata")
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs the ffmpeg command to make rotated samples")
 @pytest.mark.parametrize("ccw", [90, 180, 270])
 def test_rotated_videos_come_out_upright(sample_video, tmp_path, ccw):
@@ -54,9 +66,7 @@ def test_rotated_videos_come_out_upright(sample_video, tmp_path, ccw):
     from PIL import Image
 
     src = tmp_path / ("rot%d.mp4" % ccw)
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-display_rotation:v:0", str(ccw), "-i", sample_video, "-c", "copy", str(src)], check=True
-    )
+    make_rotated(sample_video, str(src), ccw)
     shutil.copy(sample_video[:-4] + ".SRT", str(src)[:-4] + ".SRT")
     cfg = offline_cfg(map={"enabled": False}, stats={"enabled": False})
     res = render_video(str(src), str(tmp_path / "out.mp4"), cfg)
