@@ -159,7 +159,7 @@ def test_render_frame_matches_the_image(fake_osm):
         # for the record: how this FFmpeg build converts the whole image in one go
         full = av.VideoFrame.from_bytes(ref.tobytes(), W, H, format="rgba").reformat(format=fmt)
         diff = np.abs(ar._plane_array(full.planes[3], dtype).astype(float) - truth * peak / 255).max()
-        if diff > 1:
+        if diff > 2:  # rounding is fine
             warnings.warn("%s: this FFmpeg's alpha differs from the image by up to %d" % (fmt, diff), stacklevel=1)
 
 
