@@ -1,7 +1,7 @@
 """The two on-screen widgets: the live map and the flight-stats panel.
 
 Both are safe to render from several threads at once: per-frame work only touches
-local images, and the shared caches are guarded by a lock.
+local images, and the shared caches are guarded by locks.
 """
 
 from __future__ import annotations
@@ -15,8 +15,19 @@ from typing import Optional
 from PIL import Image, ImageDraw
 
 from . import units
-from .graphics import TEXT_LOCK, downsample, font, hex_rgb, rounded_mask, rounded_ring, shadow_canvas, tile_style
-from .telemetry import Sample, Track
+from .graphics import (
+    TEXT_LOCK,
+    downsample,
+    ellipse_mask,
+    ellipse_ring,
+    font,
+    hex_rgb,
+    rounded_mask,
+    rounded_ring,
+    shadow_canvas,
+    tile_style,
+)
+from .telemetry import Sample, Track, haversine
 from .tiles import PlaceholderTiles, TileSource, tiles_along, world_px
 
 Point = tuple[float, float]
@@ -74,8 +85,7 @@ class MapWidget:
         track: Track,
         cfg: dict,
         style: dict,
-        tiles_url: str,
-        credit: str,
+        tiles_cfg: dict,
         w: int,
         h: int,
         px_scale: float,
@@ -84,10 +94,13 @@ class MapWidget:
         self.track, self.cfg = track, cfg
         self.w, self.h = max(16, int(w)), max(16, int(h))
         self.heading_up = cfg.get("orientation") == "heading"
-        self.show_path = bool(cfg.get("show_path", True))
+        self.trail = cfg.get("trail", "full")
+        self.trail_seconds = float(cfg.get("trail_seconds", 30))
         self.show_route = bool(cfg.get("show_full_route", False))
         self.show_cone = bool(cfg.get("show_cone", True))
         self.show_north = bool(cfg.get("show_north", True))
+        self.marker = cfg.get("marker", "arrow")
+        self.circle = cfg.get("shape") == "circle"
         self.accent = hex_rgb(style.get("accent", "#ff5c36"))
 
         # Pick the tile zoom whose pixels land closest to 1 screen px: same ground area
@@ -98,24 +111,45 @@ class MapWidget:
         while k > 1.42 and z < 19:
             z, k = z + 1, k / 2
         self.z, self.k = z, k
-        post = tile_style(cfg.get("style", "standard"))
-        self.tiles = PlaceholderTiles(z, post) if offline or tiles_url == "placeholder" else TileSource(tiles_url, z, post=post)
+        map_style = cfg.get("style", "light")
+        # Semi-transparent guides (camera cone, route ahead): dark on the white map, white elsewhere.
+        self.ink = (0, 0, 0) if map_style == "light" else (255, 255, 255)
+        source = tiles_cfg.get(map_style) or tiles_cfg["light"]
+        if offline or tiles_cfg.get("offline"):
+            self.tiles: TileSource = PlaceholderTiles(z, map_style)
+        else:
+            self.tiles = TileSource(source["url"], z, post=tile_style(map_style))
 
         self.world = [world_px(s.lat, s.lon, z) for s in track.samples]
         self.path_idx, self.path_pts = _simplify(self.world, self.PATH_STEP / k)
         self.route_pts = _simplify(self.world, 3 * self.PATH_STEP / k)[1]
 
         m = min(self.w, self.h)
-        self.S = m / 620.0  # design units: the layout was drawn for a 620 px map
+        self.S = m / 620.0  # design units: the look was drawn for a 620 px map
         self.radius = int(m * float(style.get("roundness", 0.06)))
         self.margin = int(max(4, m * 0.045))
-        self.mask = rounded_mask(self.w, self.h, self.radius)
-        ring = rounded_ring(self.w, self.h, self.radius, max(1.0, 5 * self.S))
-        self.border = Image.new("RGBA", (self.w, self.h), PANEL_RGB + (0,))
-        self.border.putalpha(ring.point(lambda a: a * 200 // 255))
-        self.shadow = shadow_canvas(self.mask, self.margin, 110)
-        self.credit = self._credit_layer(credit) if cfg.get("show_credit") and credit else None
+        opacity = max(0.2, min(1.0, float(cfg.get("opacity", 1.0))))
+        bw = max(1.0, 5 * self.S)
+        if self.circle:
+            mask, ring = ellipse_mask(self.w, self.h), ellipse_ring(self.w, self.h, bw)
+        else:
+            mask, ring = rounded_mask(self.w, self.h, self.radius), rounded_ring(self.w, self.h, self.radius, bw)
+        self.alpha = mask if opacity >= 1.0 else mask.point(lambda a: int(a * opacity))
+        self.border = None
+        if cfg.get("show_border", True):
+            self.border = Image.new("RGBA", (self.w, self.h), (*PANEL_RGB, 0))
+            self.border.putalpha(ring.point(lambda a: a * 200 // 255))
+        self.shadow = shadow_canvas(mask, self.margin, int(110 * opacity) if style.get("shadow", True) else 0)
+
+        self.badge_r = max(8, int(26 * self.S))
+        nr, gap = self.badge_r, int(18 * self.S)
+        if self.circle:  # tuck the badge inside the circle, at "half past one"
+            d = (m / 2 - nr - gap) / math.sqrt(2)
+            self.badge_xy = (int(self.w / 2 + d - nr), int(self.h / 2 - d - nr))
+        else:
+            self.badge_xy = (self.w - 2 * nr - gap, gap)
         self.north = self._north_badge(None) if self.show_north and not self.heading_up else None
+        self.credit = self._credit_layer(source.get("credit", "")) if cfg.get("show_credit") else None
 
         self._lock = threading.Lock()
         self._region: Optional[tuple[Image.Image, int, int]] = None
@@ -148,8 +182,7 @@ class MapWidget:
         yaw = cur.yaw or 0.0
         cx, cy = world_px(cur.lat, cur.lon, self.z)
 
-        # 1) Map imagery: one affine resample does the sub-pixel shift, the scale and
-        #    (heading-up) the rotation, straight at output size.
+        # 1) Map imagery in one resample: sub-pixel shift, scale and (heading-up) rotation.
         rot = math.radians(yaw) if self.heading_up else 0.0
         ca, sa = math.cos(rot), math.sin(rot)
         base, ox, oy = self._base(cx, cy)
@@ -176,57 +209,82 @@ class MapWidget:
         screen_yaw = 0.0 if self.heading_up else yaw
         if self.show_cone:
             cone = 210 * S * SS
-            dr.pieslice([hx - cone, hy - cone, hx + cone, hy + cone], screen_yaw - 128, screen_yaw - 52, fill=(255, 255, 255, 80))
+            dr.pieslice(
+                [hx - cone, hy - cone, hx + cone, hy + cone],
+                screen_yaw - 128,
+                screen_yaw - 52,
+                fill=(*self.ink, 80 if self.ink[0] else 34),
+            )
         pad = 40 * S * SS
         if self.show_route and len(self.route_pts) > 1:
             for run in _visible_runs([P(p) for p in self.route_pts], w * SS, h * SS, pad):
-                dr.line(run, fill=(255, 255, 255, 150), width=max(2, int(6 * S * SS)), joint="curve")
+                dr.line(run, fill=(*self.ink, 150 if self.ink[0] else 90), width=max(2, int(6 * S * SS)), joint="curve")
         halo = 46 * S * SS
-        dr.ellipse([hx - halo, hy - halo, hx + halo, hy + halo], fill=self.accent + (70,))
-        if self.show_path:
-            n = bisect_right(self.path_idx, idx)
-            pts = [P(p) for p in self.path_pts[:n]] + [(hx, hy)]
-            for run in _visible_runs(pts, w * SS, h * SS, pad):
-                if len(run) > 1:
-                    dr.line(run, fill=(255, 255, 255, 255), width=max(3, int(15 * S * SS)), joint="curve")
-                    dr.line(run, fill=self.accent + (255,), width=max(2, int(9 * S * SS)), joint="curve")
+        dr.ellipse([hx - halo, hy - halo, hx + halo, hy + halo], fill=(*self.accent, 70))
+        if self.trail != "off":
+            self._draw_trail(dr, P, t, idx, (hx, hy), w * SS, h * SS, pad)
+        self._draw_marker(dr, hx, hy, screen_yaw)
+        img.alpha_composite(downsample(layer, SS))
+
+        # 3) Decorations, shape, border, shadow.
+        if self.show_north:
+            img.alpha_composite(self.north if self.north is not None else self._north_badge(yaw), self.badge_xy)
+        if self.credit is not None:
+            img.alpha_composite(self.credit)
+        img.putalpha(self.alpha)
+        if self.border is not None:
+            img.alpha_composite(self.border)
+        out = self.shadow.copy()
+        out.alpha_composite(img, (self.margin, self.margin))
+        return out
+
+    def _draw_trail(self, dr, P, t: float, idx: int, head: Point, w: float, h: float, pad: float) -> None:
+        S, SS = self.S, self.SS
+        n = bisect_right(self.path_idx, idx)
+        if self.trail == "recent":
+            t0 = t - self.trail_seconds
+            n0 = bisect_right(self.path_idx, self.track.index_at(t0))
+            start, _, _ = self.track.at(t0)
+            pts = [P(world_px(start.lat, start.lon, self.z))] + [P(p) for p in self.path_pts[n0:n]] + [head]
+        else:
+            pts = [P(p) for p in self.path_pts[:n]] + [head]
+        for run in _visible_runs(pts, w, h, pad):
+            if len(run) > 1:
+                dr.line(run, fill=(255, 255, 255, 255), width=max(3, int(15 * S * SS)), joint="curve")
+                dr.line(run, fill=(*self.accent, 255), width=max(2, int(9 * S * SS)), joint="curve")
+        if self.trail == "full":
             sx, sy = P(self.world[0])
             r = 11 * S * SS
             dr.ellipse(
                 [sx - r, sy - r, sx + r, sy + r], fill=(255, 255, 255), outline=(30, 30, 30), width=max(1, int(3 * S * SS))
             )
+
+    def _draw_marker(self, dr, hx: float, hy: float, screen_yaw: float) -> None:
+        S, SS = self.S, self.SS
+        if self.marker == "dot":
+            r = 17 * S * SS
+            dr.ellipse([hx - r, hy - r, hx + r, hy + r], fill=(255, 255, 255))
+            r2 = 11 * S * SS
+            dr.ellipse([hx - r2, hy - r2, hx + r2, hy + r2], fill=self.accent)
+            return
         ya = math.radians(screen_yaw)
-        cy_, sy_ = math.cos(ya), math.sin(ya)
+        cy, sy = math.cos(ya), math.sin(ya)
 
         def R(x: float, y: float) -> Point:
-            return hx + x * cy_ - y * sy_, hy + x * sy_ + y * cy_
+            return hx + x * cy - y * sy, hy + x * sy + y * cy
 
         L = 30 * S * SS
         dr.polygon([R(0, -L), R(0.72 * L, 0.78 * L), R(0, 0.38 * L), R(-0.72 * L, 0.78 * L)], fill=(255, 255, 255))
         dr.polygon([R(0, -0.62 * L), R(0.42 * L, 0.5 * L), R(0, 0.22 * L), R(-0.42 * L, 0.5 * L)], fill=self.accent)
-        img.alpha_composite(downsample(layer, SS))
-
-        # 3) Static decorations, rounded corners, border, shadow.
-        if self.show_north:
-            badge = self.north if self.north is not None else self._north_badge(yaw)
-            nr = badge.width // 2
-            img.alpha_composite(badge, (w - nr - int(18 * S) - nr, int(18 * S)))
-        if self.credit is not None:
-            img.alpha_composite(self.credit)
-        img.putalpha(self.mask)
-        img.alpha_composite(self.border)
-        out = self.shadow.copy()
-        out.alpha_composite(img, (self.margin, self.margin))
-        return out
 
     def _north_badge(self, yaw: Optional[float]) -> Image.Image:
         """N badge; in heading-up mode a needle points to true north."""
-        nr = max(8, int(26 * self.S))
+        nr = self.badge_r
         D = 2 * nr * 4
         big = Image.new("RGBA", (D, D), (0, 0, 0, 0))
         d = ImageDraw.Draw(big)
         c, R = D / 2, nr * 4
-        d.ellipse([0, 0, D - 1, D - 1], fill=PANEL_RGB + (215,))
+        d.ellipse([0, 0, D - 1, D - 1], fill=(*PANEL_RGB, 215))
         if yaw is None:
             with TEXT_LOCK:
                 d.text((c, c + 4), "N", font=font(R * 1.15, 800), fill=(255, 255, 255), anchor="mm")
@@ -241,31 +299,76 @@ class MapWidget:
                 d.text((c, c), "N", font=font(R * 0.72, 800), fill=(255, 255, 255), anchor="mm")
         return downsample(big, 4)
 
-    def _credit_layer(self, credit: str) -> Image.Image:
+    def _credit_layer(self, credit: str) -> Optional[Image.Image]:
+        if not credit:
+            return None
         layer = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 0))
         S = self.S
-        ImageDraw.Draw(layer).text(
-            (self.w - int(14 * S), self.h - int(10 * S)),
-            credit,
-            font=font(max(10, 16 * S), 500),
-            fill=(40, 40, 40),
-            anchor="rd",
-            stroke_width=max(1, int(2 * S)),
-            stroke_fill=(255, 255, 255),
-        )
+        size = max(9.0, 15 * S)
+        if self.circle:
+            # Sit where the circle is wide enough, and shrink until the line fits the chord.
+            y = self.h * 0.85
+            r = min(self.w, self.h) / 2
+            room = 2 * math.sqrt(max(0.0, r * r - (y - self.h / 2) ** 2)) * 0.86
+            xy, anchor = (self.w / 2, y), "mm"
+        else:
+            room = self.w * 0.9
+            xy, anchor = (self.w - int(14 * S), self.h - int(10 * S)), "rd"
+        with TEXT_LOCK:
+            while size > 8 and font(size, 500).getlength(credit) > room:
+                size *= 0.92
+            ImageDraw.Draw(layer).text(
+                xy,
+                credit,
+                font=font(size, 500),
+                fill=(40, 40, 40),
+                anchor=anchor,
+                stroke_width=max(1, int(2 * S)),
+                stroke_fill=(255, 255, 255),
+            )
         return layer
 
 
 class StatsWidget:
-    """Panel with speed / altitude / heading / distance and optional coordinates."""
+    """Panel with flight numbers, side by side ("row") or stacked ("column")."""
 
-    # Widest value each column must fit, so the font size never jumps mid-video.
-    TEMPLATES = {
-        "metric": {"speed": ("188", "km/h"), "altitude": ("888", "m"), "heading": ("888", "°"), "distance": ("8.88", "km")},
-        "imperial": {"speed": ("188", "mph"), "altitude": ("1888", "ft"), "heading": ("888", "°"), "distance": ("8.88", "mi")},
+    KEYS = ("speed", "altitude", "vspeed", "heading", "distance", "home", "time")
+    LABELS = {
+        "speed": "SPEED",
+        "altitude": "ALTITUDE",
+        "vspeed": "VERT. SPEED",
+        "heading": "HEADING",
+        "distance": "DISTANCE",
+        "home": "FROM START",
+        "time": "TIME",
     }
-    KEYS = ("speed", "altitude", "heading", "distance")
-    LABELS = {"speed": "SPEED", "altitude": "ALTITUDE", "heading": "HEADING", "distance": "DISTANCE"}
+    # Widest value each field must fit, so the font size never jumps mid-video.
+    TEMPLATES = {
+        "metric": {
+            "speed": ("188", "km/h"),
+            "altitude": ("888", "m"),
+            "vspeed": ("+88.8", "m/s"),
+            "heading": ("888", "°"),
+            "distance": ("8.88", "km"),
+            "home": ("8.88", "km"),
+            "time": ("88:88", ""),
+        },
+        "imperial": {
+            "speed": ("188", "mph"),
+            "altitude": ("1888", "ft"),
+            "vspeed": ("+88.8", "mph"),
+            "heading": ("888", "°"),
+            "distance": ("8.88", "mi"),
+            "home": ("8.88", "mi"),
+            "time": ("88:88", ""),
+        },
+    }
+    THEMES = {
+        # panel, label, value, unit
+        "dark": (PANEL_RGB, (150, 158, 170), (255, 255, 255), (200, 205, 212)),
+        "light": ((247, 248, 250), (104, 112, 124), (16, 20, 26), (70, 76, 86)),
+    }
+    COORDS_TEMPLATE = "88.88888° N   888.88888° W"
 
     def __init__(self, track: Track, cfg: dict, style: dict, w: int, h: int):
         self.track = track
@@ -273,14 +376,22 @@ class StatsWidget:
         self.units = "imperial" if style.get("units") == "imperial" else "metric"
         self.keys = [k for k in self.KEYS if cfg.get(k)]
         self.coords = bool(cfg.get("coords"))
+        self.column = cfg.get("layout") == "column"
+        self.colors = self.THEMES["light" if cfg.get("theme") == "light" else "dark"]
         self.radius = int(min(self.w, self.h) * float(style.get("roundness", 0.06)) * 1.6)
         self.margin = int(max(4, min(self.w, self.h * 3) * 0.02))
         self.mask = rounded_mask(self.w, self.h, self.radius)
         alpha = int(255 * max(0.0, min(1.0, float(style.get("panel_opacity", 0.8)))))
-        self.panel = Image.new("RGBA", (self.w, self.h), PANEL_RGB + (0,))
+        self.panel = Image.new("RGBA", (self.w, self.h), (*self.colors[0], 0))
         self.panel.putalpha(self.mask.point(lambda a: a * alpha // 255))
-        self.shadow = shadow_canvas(self.mask, self.margin, 90 * alpha // 255)
-        self._layout()
+        strength = 90 * alpha // 255 if style.get("shadow", True) else 0
+        self.shadow = shadow_canvas(self.mask, self.margin, strength)
+        self.home = track.samples[0]
+        with TEXT_LOCK:
+            if self.column:
+                self._layout_column()
+            else:
+                self._layout_row()
         self._lock = threading.Lock()
         self._cache_key: Optional[tuple] = None
         self._cache: Optional[Image.Image] = None
@@ -289,70 +400,139 @@ class StatsWidget:
     def has_content(cls, cfg: dict) -> bool:
         return any(cfg.get(k) for k in cls.KEYS) or bool(cfg.get("coords"))
 
-    def _layout(self) -> None:
+    # ------------------------------------------------------------ layout
+    def _field_width(self, key: str, fv, fl) -> float:
+        val, unit = self.TEMPLATES[self.units][key]
+        return fv.getlength(val) + (self.val_px * 0.1 + fl.getlength(unit) if unit else 0)
+
+    def _fit_row(self, cols: int) -> tuple[float, float, float, float]:
+        """Font sizes (label, value, coords, gap) for a grid with `cols` columns."""
+        w, h, pad = self.w, self.h, self.pad
+        n_rows = math.ceil(len(self.keys) / cols) if self.keys else 0
+        colw = (w - 2 * pad) / max(1, cols)
+        weights = [0.24, 0.62] * n_rows + ([0.2] if self.coords else [])
+        unit = (h - 2 * pad) / (sum(weights) + 0.08 * max(0, len(weights) - 1)) if weights else 1.0
+        lab, val, crd, gap = 0.24 * unit, 0.62 * unit, 0.2 * unit, 0.08 * unit
+        while self.keys and val > 6:
+            fv, fl = font(val, 700), font(lab, 600)
+            self.val_px = val
+            if max(self._field_width(k, fv, fl) for k in self.keys) <= colw * 0.94:
+                break
+            val *= 0.92
+        return min(lab, val * 0.42), val, crd, gap
+
+    def _layout_row(self) -> None:
         w, h = self.w, self.h
-        pad = min(w, h) * 0.16
+        self.pad = pad = min(w, h) * 0.16
+        n = len(self.keys)
+        # Try every column count; keep the one that gives the largest numbers.
+        best = None
+        for cols in range(max(1, n), 0, -1):
+            sizes = self._fit_row(cols)
+            if best is None or sizes[1] > best[1][1] * 1.02:
+                best = (cols, sizes)
+        self.cols, (self.lab_px, self.val_px, self.crd_px, self.gap) = best
+        self.n_rows = math.ceil(n / self.cols) if n else 0
+        self.colw = (w - 2 * pad) / max(1, self.cols)
+        # Coordinates never outgrow the numbers, and must fit the width.
+        self.crd_px = min(self.crd_px, self.val_px * 0.55) if n else self.crd_px
+        while self.coords and self.crd_px > 6 and font(self.crd_px, 500).getlength(self.COORDS_TEMPLATE) > w - 2 * pad:
+            self.crd_px *= 0.92
+        self.row_step = self.lab_px + self.gap + self.val_px + self.gap
+        block = (
+            self.n_rows * self.row_step - (self.gap if n else 0) + ((self.gap if n else 0) + self.crd_px if self.coords else 0)
+        )
+        self.top = pad + max(0.0, (h - 2 * pad - block) / 2)
+
+    def _layout_column(self) -> None:
+        w, h = self.w, self.h
+        pad = min(w, h) * 0.12
         self.pad = pad
-        self.colw = (w - 2 * pad) / max(1, len(self.keys))
-        avail = h - 2 * pad
-        rows = ([0.24, 0.62] if self.keys else []) + ([0.2] if self.coords else [])
-        unit = avail / (sum(rows) + 0.08 * max(0, len(rows) - 1)) if rows else 1.0
-        self.lab_px, self.val_px, self.crd_px, self.gap = 0.24 * unit, 0.62 * unit, 0.2 * unit, 0.08 * unit
-        tpl = self.TEMPLATES[self.units]
+        slots = len(self.keys) + (0.75 if self.coords else 0)
+        self.row_h = (h - 2 * pad) / max(1.0, slots)
+        self.val_px, self.lab_px, self.crd_px = self.row_h * 0.62, self.row_h * 0.3, self.row_h * 0.75 * 0.42
+        inner = w - 2 * pad
         while self.keys and self.val_px > 6:
             fv, fl = font(self.val_px, 700), font(self.lab_px, 600)
-            widest = max(fv.getlength(tpl[k][0]) + self.val_px * 0.1 + fl.getlength(tpl[k][1]) for k in self.keys)
-            if widest <= self.colw * 0.94:
+            need = max(fl.getlength(self.LABELS[k]) + self.val_px * 0.6 + self._field_width(k, fv, fl) for k in self.keys)
+            if need <= inner:
                 break
-            self.val_px *= 0.92
-        self.lab_px = min(self.lab_px, self.val_px * 0.42)
-        widest_coords = "88.88888° N   888.88888° W"
-        while self.coords and self.crd_px > 6 and font(self.crd_px, 500).getlength(widest_coords) > w - 2 * pad:
+            self.val_px *= 0.93
+            self.lab_px *= 0.93
+        while self.coords and self.crd_px > 6 and font(self.crd_px, 500).getlength(self.COORDS_TEMPLATE) > inner:
             self.crd_px *= 0.92
-        block = (self.lab_px + self.gap + self.val_px if self.keys else 0) + (
-            (self.gap if self.keys else 0) + self.crd_px if self.coords else 0
-        )
-        self.top = pad + max(0.0, (avail - block) / 2)
+        self.top = pad + max(0.0, (h - 2 * pad - self.row_h * slots) / 2)
 
-    def values(self, cur: Sample, dist: float) -> tuple:
+    # ------------------------------------------------------------ values
+    def values(self, cur: Sample, dist: float, t: float) -> tuple:
         vals = []
         for k in self.keys:
             if k == "speed":
                 v, u = units.speed(cur.speed, self.units)
             elif k == "altitude":
                 v, u = units.altitude(cur.alt, self.units)
+            elif k == "vspeed":
+                v, u = units.vspeed(cur.vs, self.units)
             elif k == "heading":
                 v, u = units.heading(cur.yaw)
-            else:
+            elif k == "distance":
                 v, u = units.distance(dist, self.units)
+            elif k == "home":
+                v, u = units.distance(haversine(self.home.lat, self.home.lon, cur.lat, cur.lon), self.units)
+            else:
+                v, u = units.elapsed(t)
             vals.append((self.LABELS[k], v, u))
         return tuple(vals), (units.coords(cur.lat, cur.lon) if self.coords else None)
 
+    # ------------------------------------------------------------ render
     def render(self, t: float) -> Image.Image:
         cur, _, dist = self.track.at(t)
-        key = self.values(cur, dist)
+        key = self.values(cur, dist, t)
         with self._lock:
             if key == self._cache_key and self._cache is not None:
                 return self._cache
         vals, crd = key
         img = self.panel.copy()
         d = ImageDraw.Draw(img)
-        y = self.top
         with TEXT_LOCK:
-            fl, fv, fc = font(self.lab_px, 600), font(self.val_px, 700), font(self.crd_px, 500)
-            for i, (lab, val, unit) in enumerate(vals):
-                x = self.pad + i * self.colw
-                d.text((x, y), lab, font=fl, fill=(150, 158, 170))
-                vy = y + self.lab_px + self.gap
-                d.text((x, vy), val, font=fv, fill=(255, 255, 255))
-                base = vy + fv.getbbox(val)[3]
-                ux = x + d.textlength(val, font=fv) + self.val_px * 0.1
-                d.text((ux, base), unit, font=fl, fill=(200, 205, 212), anchor="ls")
-            if crd:
-                cy = y + ((self.lab_px + self.gap + self.val_px + self.gap) if vals else 0)
-                d.text((self.pad, cy), crd, font=fc, fill=(150, 158, 170))
+            if self.column:
+                self._draw_column(d, vals, crd)
+            else:
+                self._draw_row(d, vals, crd)
         out = self.shadow.copy()
         out.alpha_composite(img, (self.margin, self.margin))
         with self._lock:
             self._cache_key, self._cache = key, out
         return out
+
+    def _draw_row(self, d, vals, crd) -> None:
+        _, c_lab, c_val, c_unit = self.colors
+        fl, fv, fc = font(self.lab_px, 600), font(self.val_px, 700), font(self.crd_px, 500)
+        for i, (lab, val, unit) in enumerate(vals):
+            x = self.pad + (i % self.cols) * self.colw
+            y = self.top + (i // self.cols) * self.row_step
+            d.text((x, y), lab, font=fl, fill=c_lab)
+            vy = y + self.lab_px + self.gap
+            d.text((x, vy), val, font=fv, fill=c_val)
+            if unit:
+                base = vy + fv.getbbox(val)[3]
+                d.text((x + d.textlength(val, font=fv) + self.val_px * 0.1, base), unit, font=fl, fill=c_unit, anchor="ls")
+        if crd:
+            d.text((self.pad, self.top + self.n_rows * self.row_step), crd, font=fc, fill=c_lab)
+
+    def _draw_column(self, d, vals, crd) -> None:
+        _, c_lab, c_val, c_unit = self.colors
+        fl, fv, fc = font(self.lab_px, 600), font(self.val_px, 700), font(self.crd_px, 500)
+        right = self.w - self.pad
+        for i, (lab, val, unit) in enumerate(vals):
+            mid = self.top + (i + 0.5) * self.row_h
+            base = mid + self.val_px * 0.36
+            d.text((self.pad, base), lab, font=fl, fill=c_lab, anchor="ls")
+            x = right
+            if unit:
+                d.text((x, base), unit, font=fl, fill=c_unit, anchor="rs")
+                x -= d.textlength(unit, font=fl) + self.val_px * 0.1
+            d.text((x, base), val, font=fv, fill=c_val, anchor="rs")
+        if crd:
+            mid = self.top + (len(vals) + 0.375) * self.row_h
+            d.text((self.pad, mid), crd, font=fc, fill=c_lab, anchor="lm")

@@ -18,7 +18,7 @@ def isolated_dirs(tmp_path, monkeypatch):
 
 def offline_cfg(**over):
     cfg = settings_mod.defaults()
-    cfg["tiles"]["url"] = "placeholder"
+    cfg["tiles"]["offline"] = True
     for section, values in over.items():
         cfg[section].update(values)
     return cfg

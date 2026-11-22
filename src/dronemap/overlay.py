@@ -31,17 +31,7 @@ class Overlay:
         m = settings["map"]
         if m.get("enabled", True):
             x, y, w, h = box_to_px(m["box"], self.W, self.H)
-            mw = MapWidget(
-                track,
-                m,
-                style,
-                settings["tiles"]["url"],
-                settings["tiles"]["credit"],
-                w,
-                h,
-                px_scale=min(self.W, self.H) / 2160.0,
-                offline=offline,
-            )
+            mw = MapWidget(track, m, style, settings["tiles"], w, h, px_scale=min(self.W, self.H) / 2160.0, offline=offline)
             self.widgets.append(Placed("map", mw, x - mw.margin, y - mw.margin))
         s = settings["stats"]
         if s.get("enabled", True) and StatsWidget.has_content(s):

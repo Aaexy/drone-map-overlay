@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QHBoxLayout,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QScrollArea,
     QSlider,
@@ -28,12 +29,11 @@ from PySide6.QtWidgets import (
 
 from .. import settings as settings_mod
 from ..layout import box_to_px, px_to_box
-from ..overlay import Overlay
 from ..pipeline import demo_background, demo_track
 from . import theme
 from .canvas import BoxItem, PreviewView
 from .controls import Section, Segmented, Swatch, Toggle, button, label
-from .workers import FrameJob, PreviewLoadJob
+from .workers import FrameJob, PreviewLoadJob, WidgetPreviewJob
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +69,10 @@ class SettingsDialog(QDialog):
         self.bg_img = demo_background(self.W, self.H)
         self.preview_path = None
         self.frame_token = 0
-        self._jobs = []
+        self.preview_token = 0
+        self.shown_token = 0
+        self.sections = {}
+        self._jobs = set()  # running background jobs, held until they report back
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 16, 18, 16)
@@ -87,6 +90,9 @@ class SettingsDialog(QDialog):
         self.preview_label = label("Demo flight", "chip")
         ph.addWidget(self.preview_label)
         ph.addStretch(1)
+        reset = button("↺  Reset positions", None, self.reset_layout)
+        reset.setToolTip("Put the map and stats back where they start (right-click a box to reset just that one)")
+        ph.addWidget(reset)
         ph.addWidget(button("Preview with a video…", None, self.pick_preview_video))
         left.addLayout(ph)
         self.scene = QGraphicsScene()
@@ -106,8 +112,16 @@ class SettingsDialog(QDialog):
         self.time_slider.setValue(600)
         self.time_slider.valueChanged.connect(self.on_time)
         trow.addWidget(self.time_slider, 1)
+        self.busy = label("Updating map…", "faint")
+        self.busy.setVisible(False)
+        trow.addWidget(self.busy)
         left.addLayout(trow)
-        left.addWidget(label("Drag the map or stats to move them · drag a corner to resize (Shift keeps the shape)", "faint"))
+        left.addWidget(
+            label(
+                "Drag the map or stats to move them · drag a corner to resize (Shift keeps the shape) · right-click for more",
+                "faint",
+            )
+        )
         main.addLayout(left, 1)
 
         # ---------- right: options
@@ -129,7 +143,6 @@ class SettingsDialog(QDialog):
         main.addWidget(scroll)
 
         btns = QHBoxLayout()
-        btns.addWidget(button("Reset layout", "ghost", self.reset_layout))
         btns.addWidget(button("Restore defaults", "ghost", self.restore_defaults))
         btns.addStretch(1)
         btns.addWidget(button("Cancel", None, self.reject))
@@ -168,7 +181,7 @@ class SettingsDialog(QDialog):
         return s
 
     def _map_section(self):
-        s = Section("Map", self.cfg["map"]["enabled"], lambda v: self._set("map", "enabled", v))
+        s = self.sections["map"] = Section("Map", self.cfg["map"]["enabled"], lambda v: self._set("map", "enabled", v))
         z = self._slider("map", "zoom", 13, 19)
         zr = QWidget()
         zl = QHBoxLayout(zr)
@@ -178,20 +191,49 @@ class SettingsDialog(QDialog):
         zl.addWidget(label("Close", "faint"))
         s.wide("Zoom", zr)
         s.wide("Orientation", self._seg("map", "orientation", [("North up", "north"), ("Flight direction up", "heading")]))
-        s.wide("Map style", self._seg("map", "style", [("Standard", "standard"), ("Grayscale", "grayscale"), ("Dark", "dark")]))
-        s.row("Path flown", self._toggle("map", "show_path"))
+        s.wide(
+            "Map style",
+            self._seg("map", "style", [("Light", "light"), ("Dark", "dark"), ("Color", "color"), ("Satellite", "satellite")]),
+        )
+        s.wide("Shape", self._seg("map", "shape", [("Rounded", "rounded"), ("Circle", "circle")]))
+        trail = self._seg("map", "trail", [("Whole flight", "full"), ("Recent", "recent"), ("Off", "off")])
+        s.wide("Trail", trail)
+        secs = QSlider(Qt.Orientation.Horizontal)
+        secs.setRange(5, 120)
+        secs.setValue(int(self.cfg["map"]["trail_seconds"]))
+        secs_label = label("%d s" % secs.value(), "muted")
+        secs.valueChanged.connect(lambda v: (secs_label.setText("%d s" % v), self._set("map", "trail_seconds", v)))
+        sr = QWidget()
+        srl = QHBoxLayout(sr)
+        srl.setContentsMargins(0, 0, 0, 0)
+        srl.addWidget(label("Recent trail length", "muted"))
+        srl.addWidget(secs, 1)
+        srl.addWidget(secs_label)
+        sr.setVisible(self.cfg["map"]["trail"] == "recent")
+        trail.changed.connect(lambda v: sr.setVisible(v == "recent"))
+        s.form.addWidget(sr)
+        s.wide("Marker", self._seg("map", "marker", [("Arrow", "arrow"), ("Dot", "dot")]))
+        s.row("Map opacity", self._slider("map", "opacity", 30, 100, 100.0))
         s.row("Whole route ahead", self._toggle("map", "show_full_route"))
         s.row("Camera direction", self._toggle("map", "show_cone"))
         s.row("North marker", self._toggle("map", "show_north"))
-        s.row("Map credit (© OpenStreetMap)", self._toggle("map", "show_credit"))
+        s.row("Border", self._toggle("map", "show_border"))
+        s.row("Map credit", self._toggle("map", "show_credit"))
         return s
 
     def _stats_section(self):
-        s = Section("Flight stats", self.cfg["stats"]["enabled"], lambda v: self._set("stats", "enabled", v))
+        s = self.sections["stats"] = Section(
+            "Flight stats", self.cfg["stats"]["enabled"], lambda v: self._set("stats", "enabled", v)
+        )
+        s.wide("Layout", self._seg("stats", "layout", [("Side by side", "row"), ("Stacked", "column")]))
+        s.wide("Panel", self._seg("stats", "theme", [("Dark", "dark"), ("Light", "light")]))
         s.row("Speed", self._toggle("stats", "speed"))
         s.row("Altitude", self._toggle("stats", "altitude"))
+        s.row("Vertical speed", self._toggle("stats", "vspeed"))
         s.row("Heading", self._toggle("stats", "heading"))
         s.row("Distance flown", self._toggle("stats", "distance"))
+        s.row("Distance from start", self._toggle("stats", "home"))
+        s.row("Time", self._toggle("stats", "time"))
         s.row("Coordinates", self._toggle("stats", "coords"))
         return s
 
@@ -212,6 +254,7 @@ class SettingsDialog(QDialog):
         self._mark_swatch()
         s.wide("Accent colour", sw)
         s.row("Stats background", self._slider("style", "panel_opacity", 0, 100, 100.0))
+        s.row("Drop shadow", self._toggle("style", "shadow"))
         s.row("Corner roundness", self._slider("style", "roundness", 0, 25, 100.0))
         return s
 
@@ -299,6 +342,7 @@ class SettingsDialog(QDialog):
             if name not in self.boxes:
                 b = BoxItem(name, title, frame)
                 b.committed.connect(self.on_box_committed)
+                b.menu_requested.connect(self.box_menu)
                 self.scene.addItem(b)
                 self.boxes[name] = b
             b = self.boxes[name]
@@ -336,20 +380,38 @@ class SettingsDialog(QDialog):
         self.refresh_widgets()
 
     def refresh_widgets(self):
-        try:
-            ov = Overlay(self.track, self.cfg, self.W, self.H, offline=self.offline)
-        except Exception as e:
-            self.preview_label.setText("Preview error: %s" % e)
+        """Re-render the widgets in the background; stale results are dropped."""
+        self.preview_token += 1
+        job = WidgetPreviewJob(
+            self.preview_token, self.track, copy.deepcopy(self.cfg), self.W, self.H, self.t, self.offline, self.PW / self.W
+        )
+        self._run(job, self.on_widgets_rendered)
+        # Only show the indicator if it takes a moment (e.g. downloading satellite imagery).
+        QTimer.singleShot(300, lambda tok=self.preview_token: self.busy.setVisible(self.shown_token < tok))
+
+    def on_widgets_rendered(self, d):
+        if d.get("token") != self.preview_token:
             return
-        k = self.PW / self.W
-        for b in self.boxes.values():
-            b.pix = None
-        for p in ov.widgets:
-            img = p.widget.render(self.t)
-            disp = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS)
-            self.boxes[p.name].set_pixmap(pil_to_pixmap(disp), p.widget.margin * k)
-        for b in self.boxes.values():
+        self.shown_token = d["token"]
+        self.busy.setVisible(False)
+        if "error" in d:
+            self.preview_label.setToolTip(d["error"])
+            return
+        shown = set()
+        for name, img, margin in d["items"]:
+            self.boxes[name].set_pixmap(pil_to_pixmap(img), margin)
+            shown.add(name)
+        for name, b in self.boxes.items():
+            if name not in shown:
+                b.pix = None
             b.update()
+
+    def box_menu(self, name, pos):
+        m = QMenu(self)
+        title = "map" if name == "map" else "stats"
+        m.addAction("Reset %s position" % title, lambda: self.reset_layout(only=name))
+        m.addAction("Hide %s" % title, lambda: self.sections[name].switch.setChecked(False))
+        m.exec(pos)
 
     def on_time(self, v):
         self.t = self.duration * v / 1000.0
@@ -357,17 +419,21 @@ class SettingsDialog(QDialog):
         self.render_timer.start()
         if self.preview_path:
             self.frame_token += 1
-            job = FrameJob(self.preview_path, self.t, self.frame_token)
-            job.signals.done.connect(self.on_frame)
-            self._jobs = self._jobs[-8:] + [job]
-            QTimer.singleShot(150, lambda tok=self.frame_token, j=job: self._start_if_current(tok, j))
+            QTimer.singleShot(150, lambda tok=self.frame_token: self._load_frame(tok))
 
-    def _start_if_current(self, token, job):
-        if token == self.frame_token:
-            self.pool.start(job)
+    def _load_frame(self, token):
+        if token == self.frame_token:  # the slider has settled
+            self._run(FrameJob(self.preview_path, self.t, token), self.on_frame)
+
+    def _run(self, job, handler):
+        """Start a background job, keeping it alive until it has reported back."""
+        self._jobs.add(job)
+        job.signals.done.connect(handler)
+        job.signals.done.connect(lambda _result, j=job: self._jobs.discard(j))
+        self.pool.start(job)
 
     def on_frame(self, d):
-        if d.get("token") == self.frame_token:
+        if d.get("token") == self.frame_token and "bg" in d:
             self.bg_img = d["bg"]
             self._set_bg(self.bg_img)
 
@@ -383,10 +449,7 @@ class SettingsDialog(QDialog):
 
     def load_preview(self, path):
         self.preview_label.setText("Loading %s…" % os.path.basename(path))
-        job = PreviewLoadJob(path, copy.deepcopy(self.cfg))
-        job.signals.done.connect(self.on_preview_loaded)
-        self._jobs.append(job)
-        self.pool.start(job)
+        self._run(PreviewLoadJob(path, copy.deepcopy(self.cfg)), self.on_preview_loaded)
 
     def on_preview_loaded(self, d):
         if "error" in d:
@@ -403,10 +466,10 @@ class SettingsDialog(QDialog):
         self.time_slider.blockSignals(False)
         self.setup_scene()
 
-    def reset_layout(self):
+    def reset_layout(self, only=None):
         d = settings_mod.defaults()
-        self.cfg["map"]["box"] = d["map"]["box"]
-        self.cfg["stats"]["box"] = d["stats"]["box"]
+        for name in [only] if only else ["map", "stats"]:
+            self.cfg[name]["box"] = copy.deepcopy(d[name]["box"])
         self.setup_scene()
 
     def restore_defaults(self):

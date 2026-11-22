@@ -146,10 +146,20 @@ def _slug(url: str) -> str:
 
 
 class PlaceholderTiles(TileSource):
-    """Offline stand-in used by the settings preview before any video is opened."""
+    """Offline stand-in map (settings preview without a video, tests), drawn in the
+    colours of the chosen style so the preview still looks right."""
 
-    def __init__(self, z: int, post=None):
-        super().__init__("placeholder", z, post=post)
+    PALETTES = {
+        # background, park, building, road, minor road
+        "light": ((245, 245, 243), (232, 236, 230), (226, 226, 224), (255, 255, 255), (250, 250, 250)),
+        "dark": ((38, 38, 40), (34, 40, 36), (48, 48, 50), (70, 70, 72), (58, 58, 60)),
+        "color": ((242, 239, 233), (205, 235, 176), (217, 208, 201), (255, 255, 255), (255, 255, 255)),
+        "satellite": ((74, 86, 62), (58, 82, 48), (128, 120, 108), (168, 162, 150), (140, 134, 122)),
+    }
+
+    def __init__(self, z: int, style: str = "light"):
+        super().__init__("placeholder-" + style, z)
+        self.palette = self.PALETTES.get(style, self.PALETTES["light"])
 
     def prefetch(self, tiles, progress=None, cancelled=None):
         return
@@ -160,16 +170,16 @@ class PlaceholderTiles(TileSource):
             im = self.mem.get(key)
         if im is not None:
             return im
-        im = Image.new("RGB", (TILE, TILE), (232, 229, 222))
+        bg, park, building, road, minor = self.palette
+        im = Image.new("RGB", (TILE, TILE), bg)
         d = ImageDraw.Draw(im)
         if (x * 7 + y * 3) % 5 == 0:
-            d.rectangle([40, 50, 150, 140], fill=(205, 230, 190))
+            d.rectangle([40, 50, 150, 140], fill=park)
         if (x + y) % 4 == 1:
-            d.rectangle([130, 20, 230, 90], fill=(216, 208, 200))
-        d.line([(0, 128), (TILE, 128)], fill=(255, 255, 255), width=14)
-        d.line([(128, 0), (128, TILE)], fill=(255, 255, 255), width=10)
-        if self.post:
-            im = self.post(im)
+            d.rectangle([130, 20, 230, 90], fill=building)
+        d.line([(0, 200), (TILE, 200)], fill=minor, width=6)
+        d.line([(0, 128), (TILE, 128)], fill=road, width=14)
+        d.line([(128, 0), (128, TILE)], fill=road, width=10)
         with self.lock:
             self.mem[key] = im
         return im

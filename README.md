@@ -13,11 +13,18 @@ macOS and Linux.
 - **No extra files needed for recent DJI drones.** GPS is read from the telemetry DJI
   embeds inside the MP4 (tested on the Mini 5 Pro). Older DJI drones work too if you
   recorded with **Video Subtitles / Captions** turned on (the `.SRT` file next to the video).
-- **Live mini-map** that follows the drone: path flown, camera direction, north marker,
-  north-up or direction-of-flight-up, standard / grayscale / dark map styles.
-- **Flight stats panel** with metric or imperial units.
+- **Live mini-map** that follows the drone, in four styles: **Light** and **Dark**
+  (grayscale), **Color** (the standard map) and **Satellite**. On first launch the map
+  matches your computer: white in light mode, black in dark mode.
+- **Make it yours:** rounded or circular map, north-up or direction-of-flight-up, whole
+  flight / recent / no trail, arrow or dot marker, camera direction, route ahead, north
+  marker, border, opacity, drop shadow and accent colour.
+- **Flight stats:** speed, altitude, vertical speed, heading, distance flown, distance from
+  the start, time and coordinates, side by side (wrapping into a grid when crowded) or
+  stacked, on a dark or light panel, in metric or imperial units.
 - **Layout editor:** drag and resize the map and stats directly on a frame of your own
-  video, scrub through time, pick an accent colour. Each box is pinned to a corner, edge
+  video and scrub through time. **Reset positions** puts everything back; right-click a
+  box to reset or hide just that one. Each box is pinned to a corner, edge
   or the centre, so one layout works for landscape, vertical (9:16) and square videos at
   any resolution.
 - **Keeps your quality:** 10-bit HEVC in, 10-bit HEVC out at the original bitrate
@@ -79,15 +86,21 @@ Settings live in `settings.json` in `~/Library/Application Support/DroneMapOverl
 
 ## Map data and privacy
 
-Map tiles come from [OpenStreetMap](https://www.openstreetmap.org/copyright). They are
-downloaded once for the area you flew and cached on your computer, which means
-OpenStreetMap's tile server sees which area you requested. OpenStreetMap's licence asks
-for credit when you publish a map: either turn on **Map credit** in Settings or add
-"Map data © OpenStreetMap contributors" to your video description.
+| Style | Source | Credit |
+| --- | --- | --- |
+| Light, Dark, Color | [OpenStreetMap](https://www.openstreetmap.org/copyright) (Light and Dark are made from it on your computer) | © OpenStreetMap contributors |
+| Satellite | [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) | Imagery © Esri, Maxar, Earthstar Geographics |
 
-The tile server can be changed in the settings file (`tiles.url`), for example to use your
-own tile server. Please respect the
-[OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/) for heavy use.
+Tiles are downloaded once for the area you flew and cached on your computer, so the tile
+server sees which area you requested. Both sources ask for credit when you publish: turn on
+**Map credit** in Settings, or put the credit line in your video description. Esri's imagery
+is provided under [Esri's terms of use](https://www.esri.com/en-us/legal/terms/full-master-agreement);
+check them if you use satellite view commercially.
+
+Each style's tile server can be changed in the settings file (`tiles.light.url`,
+`tiles.satellite.url`, …), for example to use your own server or a provider you have an
+API key for. Please respect the [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
+for heavy use.
 
 ## Building from source
 

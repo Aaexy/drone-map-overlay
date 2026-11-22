@@ -104,6 +104,18 @@ def rounded_ring(w: int, h: int, r: float, width: float) -> Image.Image:
     return ImageChops.subtract(rounded_mask(w, h, r), rounded_mask(w, h, r, inset=width))
 
 
+def ellipse_mask(w: int, h: int, inset: float = 0.0) -> Image.Image:
+    """Anti-aliased ellipse alpha mask filling a w x h box."""
+    m = Image.new("L", (w * AA, h * AA), 0)
+    i = inset * AA
+    ImageDraw.Draw(m).ellipse([i, i, w * AA - 1 - i, h * AA - 1 - i], fill=255)
+    return m.reduce(AA)
+
+
+def ellipse_ring(w: int, h: int, width: float) -> Image.Image:
+    return ImageChops.subtract(ellipse_mask(w, h), ellipse_mask(w, h, inset=width))
+
+
 def shadow_canvas(mask: Image.Image, margin: int, strength: int) -> Image.Image:
     """Transparent canvas `margin` px larger than `mask` on every side, holding a soft
     drop shadow of the mask's shape. Built once per widget, then copied per frame."""
@@ -124,16 +136,35 @@ def downsample(img: Image.Image, factor: int) -> Image.Image:
     return img.convert("RGBa").reduce(factor).convert("RGBA")
 
 
+def _light_lut() -> list[int]:
+    # Lift land and areas close to white (roads stay white), keep label ink dark. The lift
+    # fades out smoothly below v=200 so anti-aliased text edges don't band.
+    lut = []
+    for v in range(256):
+        f = 0.5 if v >= 200 else 1.0 - 0.5 * max(0.0, v - 120) / 80
+        lut.append(int(round(255 - (255 - v) * f)))
+    return lut
+
+
+def _dark_lut() -> list[int]:
+    lut = []
+    for v in range(256):
+        if v >= 250:  # roads (white in the standard map): mid grey, lighter than the land
+            out = 88.0
+        elif v >= 205:  # land, built-up areas, buildings: near black with subtle steps
+            out = 24 + (249 - v) * 0.45
+        else:  # water, outlines, label ink: the darker they were, the lighter they become
+            out = 46 + (204 - v) * 0.8
+        lut.append(int(min(255, out)))
+    return lut
+
+
+_LUTS = {"light": _light_lut(), "dark": _dark_lut()}
+
+
 def tile_style(style: str) -> Optional[Callable[[Image.Image], Image.Image]]:
-    """Per-tile colour transform for the map styles."""
-    if style == "grayscale":
-        return lambda im: ImageOps.autocontrast(ImageOps.grayscale(im), cutoff=1).convert("RGB")
-    if style == "dark":
-
-        def dark(im: Image.Image) -> Image.Image:
-            h, s, v = ImageOps.invert(im.convert("RGB")).convert("HSV").split()
-            out = Image.merge("HSV", (h.point(lambda x: (x + 128) % 256), s, v)).convert("RGB")
-            return out.point(lambda x: int(x * 0.82))
-
-        return dark
-    return None
+    """Per-tile transform turning the standard map into the grayscale light / dark styles."""
+    lut = _LUTS.get(style)
+    if lut is None:
+        return None
+    return lambda im: ImageOps.grayscale(im).point(lut).convert("RGB")

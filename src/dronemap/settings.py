@@ -18,9 +18,14 @@ from .layout import migrate_box
 log = logging.getLogger(__name__)
 
 APP_NAME = "DroneMapOverlay"
-VERSION = 2
+VERSION = 3
 
 Settings = dict[str, Any]
+
+MAP_STYLES = ("light", "dark", "color", "satellite")
+_OSM = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+_OSM_CREDIT = "\u00a9 OpenStreetMap contributors"
+STATS_FIELDS = ("speed", "altitude", "vspeed", "heading", "distance", "home", "time", "coords")
 
 DEFAULTS: Settings = {
     "version": VERSION,
@@ -29,26 +34,37 @@ DEFAULTS: Settings = {
         "box": {"anchor": ["left", "bottom"], "dx": 0.0444, "dy": 0.1468, "w": 0.2843, "h": 0.287},
         "zoom": 17,
         "orientation": "north",  # "north" (north up) or "heading" (direction of flight up)
-        "style": "standard",  # "standard", "grayscale", "dark"
-        "show_path": True,
+        "style": "light",  # "light" / "dark" (grayscale), "color" (standard map), "satellite"
+        "shape": "rounded",  # "rounded" or "circle"
+        "opacity": 1.0,
+        "trail": "full",  # "full" (whole flight so far), "recent" (last trail_seconds), "off"
+        "trail_seconds": 30,
+        "marker": "arrow",  # "arrow" or "dot"
         "show_full_route": False,
         "show_cone": True,
         "show_north": True,
+        "show_border": True,
         "show_credit": False,
     },
     "stats": {
         "enabled": True,
         "box": {"anchor": ["left", "bottom"], "dx": 0.0444, "dy": 0.0352, "w": 0.2843, "h": 0.1},
+        "layout": "row",  # "row" (side by side) or "column" (stacked)
+        "theme": "dark",  # "dark" or "light" panel
         "speed": True,
         "altitude": True,
+        "vspeed": False,  # vertical speed
         "heading": True,
-        "distance": False,
+        "distance": False,  # distance flown
+        "home": False,  # straight-line distance from where the clip starts
+        "time": False,  # time since the start of the clip
         "coords": True,
     },
     "style": {
         "accent": "#ff5c36",
         "panel_opacity": 0.8,
         "roundness": 0.06,
+        "shadow": True,
         "units": "metric",  # "metric" or "imperial"
     },
     "output": {
@@ -61,11 +77,21 @@ DEFAULTS: Settings = {
         "theme": "dark",  # "dark", "light" or "system"
     },
     "tiles": {
-        # Any XYZ tile server. "placeholder" draws an offline stand-in (tests, no network).
-        "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "credit": "© OpenStreetMap contributors",
+        # One XYZ tile source per map style. "offline" draws a stand-in map (tests, no network).
+        "offline": False,
+        # light and dark are grayscale versions of the standard map, made on this computer.
+        "light": {"url": _OSM, "credit": _OSM_CREDIT},
+        "dark": {"url": _OSM, "credit": _OSM_CREDIT},
+        "color": {"url": _OSM, "credit": _OSM_CREDIT},
+        "satellite": {
+            "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            "credit": "Imagery \u00a9 Esri, Maxar, Earthstar Geographics",
+        },
     },
 }
+
+# Map style names used by earlier versions.
+_OLD_STYLES = {"standard": "color", "grayscale": "light"}
 
 
 def _platform_dir(kind: str) -> str:
@@ -109,15 +135,46 @@ def _merge(base: Settings, over: Settings) -> Settings:
 
 def normalize(raw: Settings) -> Settings:
     """Merge onto the defaults and upgrade anything stored in an older format."""
-    s = _merge(DEFAULTS, raw if isinstance(raw, dict) else {})
+    raw = raw if isinstance(raw, dict) else {}
+    s = _merge(DEFAULTS, raw)
     for name in ("map", "stats"):
         s[name]["box"] = migrate_box(s[name].get("box"), DEFAULTS[name]["box"])
-    try:
-        s["map"]["zoom"] = int(min(19, max(3, int(s["map"]["zoom"]))))
-    except (TypeError, ValueError):
-        s["map"]["zoom"] = DEFAULTS["map"]["zoom"]
+    m = s["map"]
+    m["style"] = _OLD_STYLES.get(m["style"], m["style"])
+    if m["style"] not in MAP_STYLES:
+        m["style"] = DEFAULTS["map"]["style"]
+    old_map = raw.get("map") if isinstance(raw.get("map"), dict) else {}
+    if old_map.get("show_path") is False and "trail" not in old_map:  # v2 had an on/off path switch
+        m["trail"] = "off"
+    old_tiles = raw.get("tiles") if isinstance(raw.get("tiles"), dict) else {}
+    if isinstance(old_tiles.get("url"), str):  # v1/v2 had a single tile source
+        if old_tiles["url"] == "placeholder":
+            s["tiles"]["offline"] = True
+        elif old_tiles["url"] != _OSM:
+            for st in ("light", "dark", "color"):
+                s["tiles"][st]["url"] = old_tiles["url"]
+    m["zoom"] = _clamp_int(m.get("zoom"), 3, 19, DEFAULTS["map"]["zoom"])
+    m["trail_seconds"] = _clamp_int(m.get("trail_seconds"), 1, 3600, DEFAULTS["map"]["trail_seconds"])
     s["version"] = VERSION
     return s
+
+
+def _clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        return int(min(hi, max(lo, int(v))))
+    except (TypeError, ValueError):
+        return default
+
+
+def first_run_defaults(system_dark: bool) -> Settings:
+    """Settings for a brand-new install: the map matches the computer's light/dark mode."""
+    s = defaults()
+    s["map"]["style"] = "dark" if system_dark else "light"
+    return s
+
+
+def exists() -> bool:
+    return os.path.exists(settings_path())
 
 
 def defaults() -> Settings:

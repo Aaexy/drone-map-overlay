@@ -38,3 +38,20 @@ def distance(m: float, units: str) -> Formatted:
 
 def coords(lat: float, lon: float) -> str:
     return "%.5f° %s   %.5f° %s" % (abs(lat), "N" if lat >= 0 else "S", abs(lon), "E" if lon >= 0 else "W")
+
+
+def vspeed(mps: Optional[float], units: str) -> Formatted:
+    """Vertical speed with a sign, so climbing and descending read differently."""
+    if mps is None:
+        return "--", ""
+    v = mps * 2.236936 if units == "imperial" else mps
+    if abs(v) < 0.05:
+        v = 0.0
+    return "%+.1f" % v if v else "0.0", "mph" if units == "imperial" else "m/s"
+
+
+def elapsed(seconds: float) -> Formatted:
+    s = int(max(0.0, seconds))
+    if s >= 3600:
+        return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60), ""
+    return "%d:%02d" % (s // 60, s % 60), ""

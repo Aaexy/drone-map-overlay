@@ -221,8 +221,9 @@ class Section(QFrame):
         self.form = QVBoxLayout(self.body)
         self.form.setContentsMargins(0, 0, 0, 0)
         self.form.setSpacing(10)
+        self.switch = None
         if toggle is not None:
-            sw = Toggle(toggle)
+            sw = self.switch = Toggle(toggle)
             sw.setAccessibleName(title)
             sw.toggled.connect(self.body.setEnabled)
             if on_toggle:

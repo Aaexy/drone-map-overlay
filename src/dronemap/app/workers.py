@@ -47,6 +47,13 @@ class RenderWorker(QThread):
 class _Signals(QObject):
     done = Signal(object)
 
+    def send(self, payload: dict) -> None:
+        """Deliver a result; quietly drop it if the window that asked has closed."""
+        try:
+            self.done.emit(payload)
+        except RuntimeError:
+            pass
+
 
 class PreviewLoadJob(QRunnable):
     """Load a preview video's GPS, one frame and its map tiles off the UI thread."""
@@ -64,10 +71,10 @@ class PreviewLoadJob(QRunnable):
             t = min(track.duration * 0.5, max(0.0, info.duration - 0.05))
             bg = grab_frame(self.path, t)
             Overlay(track, self.cfg, info.width, info.height).prefetch()
-            self.signals.done.emit(dict(path=self.path, track=track, bg=bg, W=info.width, H=info.height, dur=info.duration, t=t))
+            self.signals.send(dict(path=self.path, track=track, bg=bg, W=info.width, H=info.height, dur=info.duration, t=t))
         except Exception as e:
             log.info("Preview load failed for %s: %s", self.path, e)
-            self.signals.done.emit(dict(path=self.path, error=describe(e)[0]))
+            self.signals.send(dict(path=self.path, error=describe(e)[0]))
 
 
 class FrameJob(QRunnable):
@@ -81,6 +88,33 @@ class FrameJob(QRunnable):
 
     def run(self) -> None:
         try:
-            self.signals.done.emit(dict(token=self.token, bg=grab_frame(self.path, self.t)))
+            self.signals.send(dict(token=self.token, bg=grab_frame(self.path, self.t)))
         except Exception as e:
             log.info("Preview frame failed: %s", e)
+            self.signals.send(dict(token=self.token, error=str(e)))
+
+
+class WidgetPreviewJob(QRunnable):
+    """Render the widgets for the layout preview (may download map tiles, so not on the UI thread)."""
+
+    def __init__(self, token: int, track, cfg: dict, W: int, H: int, t: float, offline: bool, scale: float):
+        super().__init__()
+        self.token, self.track, self.cfg = token, track, cfg
+        self.W, self.H, self.t, self.offline, self.scale = W, H, t, offline, scale
+        self.setAutoDelete(False)
+        self.signals = _Signals()
+
+    def run(self) -> None:
+        from PIL import Image
+
+        try:
+            ov = Overlay(self.track, self.cfg, self.W, self.H, offline=self.offline)
+            items = []
+            for p in ov.widgets:
+                img = p.widget.render(self.t)
+                size = (max(1, int(img.width * self.scale)), max(1, int(img.height * self.scale)))
+                items.append((p.name, img.resize(size, Image.LANCZOS), p.widget.margin * self.scale))
+            self.signals.send(dict(token=self.token, items=items))
+        except Exception as e:
+            log.info("Preview render failed: %s", e)
+            self.signals.send(dict(token=self.token, error=describe(e)[0]))

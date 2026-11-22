@@ -13,6 +13,7 @@ import math
 import os
 import re
 import struct
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,6 +30,7 @@ class Sample:
     alt: Optional[float] = None  # metres above take-off
     speed: Optional[float] = None  # horizontal speed, m/s
     yaw: Optional[float] = None  # heading in degrees, 0 = north, clockwise
+    vs: Optional[float] = None  # vertical speed, m/s, positive = climbing
 
 
 MAX_SPEED = 120.0  # m/s; anything faster between two fixes is a GPS glitch, not flight
@@ -57,12 +59,20 @@ class Track:
         self.samples = drop_glitches(sorted(samples, key=lambda s: s.t))
         self.source = source
         self._fill_missing()
+        self._times = [x.t for x in self.samples]
         self.dist = [0.0]
         for a, b in zip(self.samples, self.samples[1:]):
             self.dist.append(self.dist[-1] + haversine(a.lat, a.lon, b.lat, b.lon))
 
     def _fill_missing(self):
         s = self.samples
+        # Vertical speed from altitude over a ~1 s window (smooths barometer noise).
+        if any(x.alt is not None for x in s):
+            for i, x in enumerate(s):
+                j0, j1 = _window(s, i, 0.5)
+                a, b = s[j0], s[j1]
+                if a.alt is not None and b.alt is not None and b.t > a.t:
+                    x.vs = (b.alt - a.alt) / (b.t - a.t)
         # Derive speed / heading from positions when the source does not provide them.
         if any(x.speed is None for x in s) or any(x.yaw is None for x in s):
             for i, x in enumerate(s):
@@ -83,6 +93,10 @@ class Track:
             for x in s:
                 if x.yaw is None:
                     x.yaw = first
+
+    def index_at(self, t: float) -> int:
+        """Index of the last real sample at or before t (0 if t is before the track)."""
+        return max(0, bisect_right(self._times, t) - 1)
 
     @property
     def duration(self) -> float:
@@ -121,6 +135,7 @@ class Track:
             lerp(a.alt, b.alt),
             lerp(a.speed, b.speed),
             yaw if yaw is not None else a.yaw,
+            lerp(a.vs, b.vs),
         )
         return out, lo, lerp(self.dist[lo], self.dist[hi])
 

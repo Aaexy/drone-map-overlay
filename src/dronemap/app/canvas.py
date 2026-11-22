@@ -13,6 +13,7 @@ class BoxItem(QGraphicsObject):
     """A movable, resizable box showing a rendered widget."""
 
     committed = Signal()  # emitted when a drag or resize finishes
+    menu_requested = Signal(str, object)  # widget name, global QPoint
     HANDLE = 9
 
     def __init__(self, name: str, title: str, frame: QRectF):
@@ -162,6 +163,10 @@ class BoxItem(QGraphicsObject):
                 r.translate(0, target - cur)
                 break
         return r
+
+    def contextMenuEvent(self, e) -> None:
+        self.menu_requested.emit(self.name, e.screenPos())
+        e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
         if self.mode:

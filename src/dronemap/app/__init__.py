@@ -37,6 +37,11 @@ def run(files: Optional[list[str]] = None) -> int:
     app = App.instance() or App(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setOrganizationName(settings_mod.APP_NAME)
+    if not settings_mod.exists():
+        # First launch: a white map on a light-mode computer, a black one in dark mode.
+        dark = theme.resolve("system") == "dark"
+        settings_mod.save(settings_mod.first_run_defaults(system_dark=dark))
+        log.info("First launch: system is %s, map style set to %s", "dark" if dark else "light", "dark" if dark else "light")
     theme.apply(app, settings_mod.load()["app"].get("theme", "dark"))
     icon = asset("icon.png")
     if icon:
