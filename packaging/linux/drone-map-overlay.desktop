@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Drone Map Overlay
+Comment=Burn a live GPS map and flight stats into drone videos
+Exec=drone-map-overlay %F
+Icon=drone-map-overlay
+Terminal=false
+Categories=AudioVideo;Video;
+MimeType=video/mp4;video/quicktime;

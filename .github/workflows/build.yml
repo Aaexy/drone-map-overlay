@@ -85,15 +85,77 @@ jobs:
           test -s smoke/out.mp4
           python -c "import av; c = av.open('smoke/out.mp4'); v = c.streams.video[0]; n = sum(1 for _ in c.decode(v)); print('frames', n); assert n == 60"
 
-      - name: Package
+      - name: Version
+        run: echo "VERSION=$(python -c 'import sys; sys.path.insert(0, "src"); import dronemap; print(dronemap.__version__)')" >> "$GITHUB_ENV"
+
+      # ---------------- Windows: installer + portable zip
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\dist\Drone Map Overlay" "/DOutputDir=$PWD\out" packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # portable: the same folder plus portable.txt, so settings stay next to the app
+          Copy-Item -Recurse "dist\Drone Map Overlay" "portable\Drone Map Overlay"
+          Set-Content "portable\Drone Map Overlay\portable.txt" "Settings, map cache and logs are kept in the data folder next to this file."
+          Compress-Archive -Path "portable\Drone Map Overlay" -DestinationPath "out\DroneMapOverlay-$env:VERSION-Windows-Portable.zip"
+          Get-ChildItem out
+
+      - name: Windows installer smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem out\*-Setup.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER","/DIR=$env:RUNNER_TEMP\dmo" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+          $exe = "$env:RUNNER_TEMP\dmo\Drone Map Overlay.exe"
+          $r = Start-Process $exe -ArgumentList "--cli","smoke/sample.mp4","--settings","smoke/settings.json","-o","smoke/installed.mp4" -Wait -PassThru
+          if (-not (Test-Path smoke/installed.mp4)) { exit 1 }
+          $u = Start-Process "$env:RUNNER_TEMP\dmo\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          Write-Host "installed, rendered and uninstalled OK"
+
+      # ---------------- macOS: disk image + zip
+      - name: macOS disk image
+        if: runner.os == 'macOS'
         run: |
           mkdir -p out
-          case "$RUNNER_OS" in
-            macOS)   ditto -c -k --keepParent "dist/Drone Map Overlay.app" "out/${{ matrix.artifact }}.zip" ;;
-            Windows) (cd dist && 7z a -tzip "../out/${{ matrix.artifact }}.zip" "Drone Map Overlay" > /dev/null) ;;
-            *)       tar -C dist -czf "out/${{ matrix.artifact }}.tar.gz" "Drone Map Overlay" ;;
-          esac
+          packaging/macos/make_dmg.sh "dist/Drone Map Overlay.app" "out/DroneMapOverlay-$VERSION-macOS.dmg"
+          ditto -c -k --keepParent "dist/Drone Map Overlay.app" "out/DroneMapOverlay-$VERSION-macOS.zip"
+          MNT=$(hdiutil attach -nobrowse -readonly "out/DroneMapOverlay-$VERSION-macOS.dmg" | tail -1 | awk -F'\t' '{print $NF}')
+          "$MNT/Drone Map Overlay.app/Contents/MacOS/Drone Map Overlay" --cli smoke/sample.mp4 --settings smoke/settings.json -o smoke/dmg.mp4
+          hdiutil detach "$MNT"
+          test -s smoke/dmg.mp4
           ls -la out
+
+      # ---------------- Linux: AppImage + .deb + portable tar.gz
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p out
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGETOOL=./appimagetool packaging/linux/make_appimage.sh "dist/Drone Map Overlay" "out/DroneMapOverlay-$VERSION-Linux-x86_64.AppImage"
+          packaging/linux/make_deb.sh "dist/Drone Map Overlay" "$VERSION" "out/drone-map-overlay_${VERSION}_amd64.deb"
+          mkdir -p portable && cp -R "dist/Drone Map Overlay" portable/
+          echo "Settings, map cache and logs are kept in the data folder next to this file." > "portable/Drone Map Overlay/portable.txt"
+          tar -C portable -czf "out/DroneMapOverlay-$VERSION-Linux-Portable.tar.gz" "Drone Map Overlay"
+          ls -la out
+
+      - name: Linux packages smoke test
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          "out/DroneMapOverlay-$VERSION-Linux-x86_64.AppImage" --cli smoke/sample.mp4 --settings smoke/settings.json -o smoke/appimage.mp4
+          test -s smoke/appimage.mp4
+          sudo apt-get install -y "./out/drone-map-overlay_${VERSION}_amd64.deb"
+          drone-map-overlay --cli smoke/sample.mp4 --settings smoke/settings.json -o smoke/deb.mp4
+          test -s smoke/deb.mp4
+          sudo apt-get remove -y drone-map-overlay
 
       - uses: actions/upload-artifact@v4
         with:

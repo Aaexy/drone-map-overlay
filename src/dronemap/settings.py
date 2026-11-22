@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 from .layout import migrate_box
 
@@ -94,7 +94,22 @@ DEFAULTS: Settings = {
 _OLD_STYLES = {"standard": "color", "grayscale": "light"}
 
 
+def portable_root() -> Optional[str]:
+    """Folder holding the app when it runs in portable mode (a `portable.txt` next to the
+    executable), else None. Portable copies keep everything in a `data` folder beside them."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for d in (exe_dir, os.path.dirname(exe_dir)):
+        if os.path.exists(os.path.join(d, "portable.txt")):
+            return d
+    return None
+
+
 def _platform_dir(kind: str) -> str:
+    root = portable_root()
+    if root:
+        return os.path.join(root, "data", kind)
     home = os.path.expanduser("~")
     if sys.platform == "win32":
         env = "APPDATA" if kind == "config" else "LOCALAPPDATA"

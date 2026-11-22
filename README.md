@@ -36,12 +36,21 @@ macOS and Linux.
 
 ## Download
 
-Builds for each platform are produced by GitHub Actions on every push
-(**Actions → latest run → Artifacts**) and attached to tagged releases.
+Each build produces, for every platform, an **installer** and a **portable** version
+(GitHub Actions → latest run → Artifacts; attached to tagged releases):
+
+| Platform | Installer | Portable |
+| --- | --- | --- |
+| Windows | `…-Windows-Setup.exe`: installs for your user (no admin needed), Start menu entry, uninstaller | `…-Windows-Portable.zip`: unzip anywhere and run `Drone Map Overlay.exe` |
+| macOS | `…-macOS.dmg`: open it and drag the app to Applications | `…-macOS.zip` |
+| Linux | `drone-map-overlay_…_amd64.deb` (Debian/Ubuntu: menu entry and `drone-map-overlay` command) or `…-x86_64.AppImage` (single file: make it executable and run) | `…-Linux-Portable.tar.gz` |
+
+The portable Windows and Linux versions keep their settings, map cache and logs in a `data`
+folder next to the app (because of the `portable.txt` file there), so they can run from a
+USB stick without leaving anything on the computer.
 
 - **macOS:** the app isn't signed yet. The first time, right-click the app → **Open** → **Open**.
 - **Windows:** SmartScreen may warn about an unknown publisher → **More info** → **Run anyway**.
-- **Linux:** extract the `.tar.gz` and run `Drone Map Overlay/Drone Map Overlay`.
 
 ## How to use
 

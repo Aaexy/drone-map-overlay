@@ -72,3 +72,16 @@ def test_corrupt_settings_fall_back_to_defaults():
     with open(settings_mod.settings_path(), "w") as f:
         f.write("{not json")
     assert settings_mod.load() == settings_mod.defaults()
+
+
+def test_portable_mode_keeps_data_next_to_the_app(tmp_path, monkeypatch):
+    import sys
+
+    exe_dir = tmp_path / "Drone Map Overlay"
+    exe_dir.mkdir()
+    (exe_dir / "portable.txt").write_text("")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "Drone Map Overlay.exe"))
+    assert settings_mod.portable_root() == str(exe_dir)
+    (exe_dir / "portable.txt").unlink()
+    assert settings_mod.portable_root() is None
