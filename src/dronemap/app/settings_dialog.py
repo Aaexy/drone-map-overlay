@@ -115,6 +115,10 @@ class SettingsDialog(QDialog):
         self.busy = label("Updating map…", "faint")
         self.busy.setVisible(False)
         trow.addWidget(self.busy)
+        self.map_warning = label("⚠  Map couldn't be downloaded", "muted")
+        self.map_warning.setStyleSheet("color: %s;" % theme.T["accent"])
+        self.map_warning.setVisible(False)
+        trow.addWidget(self.map_warning)
         left.addLayout(trow)
         left.addWidget(
             label(
@@ -146,9 +150,11 @@ class SettingsDialog(QDialog):
         btns.addWidget(button("Restore defaults", "ghost", self.restore_defaults))
         btns.addStretch(1)
         btns.addWidget(button("Cancel", None, self.reject))
-        save = button("Save", "primary", self.save)
-        save.setDefault(True)
-        btns.addWidget(save)
+        btns.addWidget(button("Save", None, self.save))
+        render = button("Save && render  ▶", "primary", self.save_and_render)
+        render.setToolTip("Save these settings and render the preview video (or choose videos)")
+        render.setDefault(True)
+        btns.addWidget(render)
         outer.addLayout(btns)
 
         self.render_timer = QTimer(self)
@@ -397,6 +403,13 @@ class SettingsDialog(QDialog):
         if "error" in d:
             self.preview_label.setToolTip(d["error"])
             return
+        err = d.get("tile_error")
+        self.map_warning.setVisible(bool(err) and not self.offline)
+        if err:
+            self.map_warning.setToolTip(
+                "Some map tiles couldn't be downloaded, so parts of the map are blank.\n"
+                "Check your internet connection.\n\nDetails: %s" % err
+            )
         shown = set()
         for name, img, margin in d["items"]:
             self.boxes[name].set_pixmap(pil_to_pixmap(img), margin)
@@ -494,3 +507,15 @@ class SettingsDialog(QDialog):
         self.on_box_committed()
         settings_mod.save(self.cfg)
         self.accept()
+
+    def save_and_render(self):
+        """Save, close, and queue the video being previewed (or let the user pick some)."""
+        video = self.preview_path
+        self.save()
+        main = self.parent()
+        if main is None or not hasattr(main, "add_files"):
+            return
+        if video and os.path.exists(video):
+            main.add_files([video])
+        else:
+            QTimer.singleShot(0, main.open_dialog)

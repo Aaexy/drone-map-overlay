@@ -124,3 +124,36 @@ def test_long_trail_draws_same_as_before_chunking(t):
     m.path_chunks = [(0, len(m.path_pts) - 1, -1e18, -1e18, 1e18, 1e18)]  # one chunk: always "visible"
     without = m.render(t)
     assert with_culling.tobytes() == without.tobytes()
+
+
+# ------------------------------------------------------------------ tile downloads
+def test_failed_tiles_are_not_retried_every_frame(monkeypatch):
+    import time
+
+    from dronemap import tiles
+
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(tiles.urllib.request, "urlopen", boom)
+    src = tiles.TileSource("https://tiles.invalid/{z}/{x}/{y}.png", 12)
+    t0 = time.time()
+    for _ in range(50):
+        src.region(0, 0, 600, 600)  # 9 tiles, over and over (like rendering frames)
+    assert calls["n"] == 9 and src.failed == 9
+    assert "unreachable" in src.last_error
+    assert time.time() - t0 < 2
+
+
+def test_downloads_use_bundled_certificates():
+    import certifi
+
+    from dronemap import tiles
+
+    ctx = tiles.ssl_context()
+    assert ctx.verify_mode.name == "CERT_REQUIRED"
+    assert ctx.cert_store_stats()["x509_ca"] > 50  # loaded from certifi's bundle
+    assert certifi.where()

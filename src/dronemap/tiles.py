@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
+import ssl
 import threading
 import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 from PIL import Image, ImageDraw
 
@@ -16,6 +19,22 @@ from .settings import cache_dir
 
 TILE = 256
 USER_AGENT = "drone-map-overlay/%s" % __version__
+log = logging.getLogger(__name__)
+_ssl: Optional[ssl.SSLContext] = None
+
+
+def ssl_context() -> ssl.SSLContext:
+    """HTTPS context using the bundled certifi CA list. Packaged apps can't rely on the
+    interpreter finding the system's certificates (on macOS, every download failed)."""
+    global _ssl
+    if _ssl is None:
+        try:
+            import certifi
+
+            _ssl = ssl.create_default_context(cafile=certifi.where())
+        except Exception:  # certifi missing: fall back to the system default
+            _ssl = ssl.create_default_context()
+    return _ssl
 
 
 def world_px(lat: float, lon: float, z: int):
@@ -42,6 +61,8 @@ class TileSource:
         self.mem_tiles = mem_tiles
         self.lock = threading.Lock()
         self.failed = 0
+        self.bad: set = set()
+        self.last_error: Optional[str] = None
         self._blank = Image.new("RGB", (TILE, TILE), (224, 224, 224))
 
     def _path(self, x, y):
@@ -54,10 +75,13 @@ class TileSource:
         n = 1 << self.z
         if not (0 <= y < n):
             return False
+        with self.lock:
+            if (x, y) in self.bad:  # already failed this session: don't retry every frame
+                return False
         url = self.url.format(z=self.z, x=x % n, y=y, s="a")
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
                 data = r.read()
             os.makedirs(os.path.dirname(p), exist_ok=True)
             tmp = p + ".part"
@@ -65,9 +89,14 @@ class TileSource:
                 f.write(data)
             os.replace(tmp, p)
             return True
-        except Exception:
+        except Exception as e:
             with self.lock:
                 self.failed += 1
+                self.bad.add((x, y))
+                first = self.last_error is None
+                self.last_error = str(getattr(e, "reason", None) or e)
+            if first:
+                log.warning("Map tile download failed (%s): %s", url, self.last_error)
             return False
 
     def prefetch(self, tiles, progress=None, cancelled=None):
