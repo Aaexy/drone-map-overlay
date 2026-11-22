@@ -106,20 +106,36 @@ jobs:
 
       - name: Windows installer smoke test
         if: runner.os == 'Windows'
+        timeout-minutes: 10
         shell: pwsh
         run: |
-          $setup = Get-ChildItem out\*-Setup.exe | Select-Object -First 1
-          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER","/DIR=$env:RUNNER_TEMP\dmo" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { exit 1 }
-          $exe = "$env:RUNNER_TEMP\dmo\Drone Map Overlay.exe"
-          $r = Start-Process $exe -ArgumentList "--cli","smoke/sample.mp4","--settings","smoke/settings.json","-o","smoke/installed.mp4" -Wait -PassThru
-          if (-not (Test-Path smoke/installed.mp4)) { exit 1 }
-          $u = Start-Process "$env:RUNNER_TEMP\dmo\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          function Run-Timed($file, $argList, $label, $limit = 240) {
+            $p = Start-Process $file -ArgumentList $argList -PassThru `
+                 -RedirectStandardOutput "$env:RUNNER_TEMP\$label.out" -RedirectStandardError "$env:RUNNER_TEMP\$label.err"
+            if (-not $p.WaitForExit($limit * 1000)) {
+              Write-Host "::error::$label did not finish within $limit s"
+              Get-Process | Where-Object { $_.ProcessName -match 'Drone|unins|Setup|is-' } | Format-Table Id, ProcessName, MainWindowTitle
+              $p.Kill($true); return $false
+            }
+            Write-Host "$label exit code $($p.ExitCode)"
+            Get-Content "$env:RUNNER_TEMP\$label.out", "$env:RUNNER_TEMP\$label.err" -ErrorAction SilentlyContinue
+            return ($p.ExitCode -eq 0)
+          }
+          $setup = (Get-ChildItem out\*-Setup.exe | Select-Object -First 1).FullName
+          $dir = "$env:RUNNER_TEMP\dmo"
+          $ok = Run-Timed $setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/LOG=`"$env:RUNNER_TEMP\setup.log`"", "/DIR=`"$dir`"") "install"
+          if (-not $ok) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40 -ErrorAction SilentlyContinue; exit 1 }
+          Get-ChildItem $dir | Select-Object -First 5 | Format-Table Name
+          $ok = Run-Timed "$dir\Drone Map Overlay.exe" @("--cli", "-v", "`"$PWD\smoke\sample.mp4`"", "--settings", "`"$PWD\smoke\settings.json`"", "-o", "`"$PWD\smoke\installed.mp4`"") "render"
+          Get-Content "$env:LOCALAPPDATA\DroneMapOverlay\logs\dronemap.log" -Tail 30 -ErrorAction SilentlyContinue
+          if (-not $ok -or -not (Test-Path smoke\installed.mp4)) { exit 1 }
+          $ok = Run-Timed "$dir\unins000.exe" @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") "uninstall"
           Write-Host "installed, rendered and uninstalled OK"
 
       # ---------------- macOS: disk image + zip
       - name: macOS disk image
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: |
           mkdir -p out
           packaging/macos/make_dmg.sh "dist/Drone Map Overlay.app" "out/DroneMapOverlay-$VERSION-macOS.dmg"
@@ -146,14 +162,18 @@ jobs:
 
       - name: Linux packages smoke test
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         env:
           QT_QPA_PLATFORM: offscreen
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          "out/DroneMapOverlay-$VERSION-Linux-x86_64.AppImage" --cli smoke/sample.mp4 --settings smoke/settings.json -o smoke/appimage.mp4
+          showlog() { tail -30 ~/.local/state/DroneMapOverlay/dronemap.log 2>/dev/null || true; }
+          trap showlog EXIT
+          timeout 240 "out/DroneMapOverlay-$VERSION-Linux-x86_64.AppImage" --cli -v smoke/sample.mp4 --settings smoke/settings.json -o smoke/appimage.mp4
           test -s smoke/appimage.mp4
-          sudo apt-get install -y "./out/drone-map-overlay_${VERSION}_amd64.deb"
-          drone-map-overlay --cli smoke/sample.mp4 --settings smoke/settings.json -o smoke/deb.mp4
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "./out/drone-map-overlay_${VERSION}_amd64.deb"
+          ls -la /usr/bin/drone-map-overlay /opt/drone-map-overlay | head
+          timeout 240 drone-map-overlay --cli -v smoke/sample.mp4 --settings smoke/settings.json -o smoke/deb.mp4 </dev/null
           test -s smoke/deb.mp4
           sudo apt-get remove -y drone-map-overlay
 
