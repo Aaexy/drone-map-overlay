@@ -70,7 +70,9 @@ DEFAULTS: Settings = {
         "text_size": 1.0,
         "max_distance": 800,  # metres: further streets fade out
         "height_offset": 0.0,  # metres added to the drone's height, to fine-tune alignment
-        "fov": 68.0,  # camera field of view across the long side, degrees
+        "fov": 69.6,  # camera field of view across the long side, degrees (Mini 5 Pro, measured)
+        # compare the video with satellite imagery to correct the camera angles and height
+        "auto_align": True,
     },
     "style": {
         "accent": "#ff5c36",
@@ -183,6 +185,9 @@ def normalize(raw: Settings) -> Settings:
     m["zoom"] = _clamp_int(m.get("zoom"), 3, 19, DEFAULTS["map"]["zoom"])
     st = s["streets"]
     st["max_distance"] = _clamp_int(st.get("max_distance"), 100, 3000, DEFAULTS["streets"]["max_distance"])
+    if st.get("fov") == 68.0:  # the default before 0.3, measured less carefully
+        st["fov"] = DEFAULTS["streets"]["fov"]
+    st["auto_align"] = bool(st.get("auto_align", True))
     for k, lo, hi in (("line_width", 0.3, 3.0), ("text_size", 0.5, 2.5), ("height_offset", -200.0, 200.0), ("fov", 20.0, 130.0)):
         try:
             st[k] = min(hi, max(lo, float(st[k])))

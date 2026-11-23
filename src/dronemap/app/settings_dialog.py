@@ -409,7 +409,8 @@ class SettingsDialog(QDialog):
         s.form.addWidget(
             label(
                 "Lines and names of the streets drawn into the picture, where they really are. "
-                "Uses the camera angle recorded by DJI drones and OpenStreetMap data.",
+                "Uses the camera angle recorded by DJI drones (tuned for the Mini 5 Pro) and "
+                "OpenStreetMap data.",
                 "faint",
                 wrap=True,
             )
@@ -418,6 +419,13 @@ class SettingsDialog(QDialog):
         self._paint_streets_note()
         s.row("Street lines", self._toggle("streets", "lines"))
         s.row("Street names", self._toggle("streets", "names"))
+        aa = self._toggle("streets", "auto_align")
+        aa.setToolTip(
+            "Compares the video with satellite imagery to correct the drone's camera angles\n"
+            "and height, so the lines sit on the real streets. Adds about 30 seconds per\n"
+            "5 minutes of video to the render (once per video)."
+        )
+        s.row("Line up with the video", aa)
         s.wide(
             "Line colour",
             self._seg("streets", "line_color", [("White", "white"), ("Yellow", "yellow"), ("Accent", "accent")]),
@@ -429,8 +437,8 @@ class SettingsDialog(QDialog):
         s.row("How far", self._with_value(dist, lambda v: "%d m" % v))
         h = self._slider("streets", "height_offset", -40, 40)
         h.setToolTip(
-            "If the lines sit above or below the real streets (the drone's take-off height is\n"
-            "estimated from terrain data), nudge this until they line up in the preview."
+            "Added to the drone's height. Rarely needed with \u201cLine up with the video\u201d on;\n"
+            "without it, nudge this until the lines sit on the streets in the preview."
         )
         s.row("Height fine-tune", self._with_value(h, lambda v: "%+d m" % v))
         return s
@@ -609,7 +617,15 @@ class SettingsDialog(QDialog):
         """Re-render the widgets in the background; stale results are dropped."""
         self.preview_token += 1
         job = WidgetPreviewJob(
-            self.preview_token, self.track, copy.deepcopy(self.cfg), self.W, self.H, self.t, self.offline, self.PW / self.W
+            self.preview_token,
+            self.track,
+            copy.deepcopy(self.cfg),
+            self.W,
+            self.H,
+            self.t,
+            self.offline,
+            self.PW / self.W,
+            video=self.preview_path,
         )
         self._run(job, self.on_widgets_rendered)
         # Only show the indicator if it takes a moment (e.g. downloading satellite imagery).

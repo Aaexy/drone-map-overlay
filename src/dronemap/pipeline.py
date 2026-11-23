@@ -274,9 +274,9 @@ def render_video(
         track.source,
     )
 
-    ov = Overlay(track, cfg, info.width, info.height)
+    ov = Overlay(track, cfg, info.width, info.height, video=src)
     progress("map", 0.0)
-    ov.prefetch(lambda f: progress("map", f), cancelled, lambda f: progress("streets", f))
+    ov.prefetch(lambda f: progress("map", f), cancelled, lambda f: progress("streets", f), lambda f: progress("align", f))
     if cancelled():
         raise Cancelled()
 
@@ -463,7 +463,9 @@ def render_preview(
         bg, track = demo_background(3840, 2160), demo_track()
         t = track.duration * 0.6 if t is None else t
         offline = True
-    ov = Overlay(track, cfg, bg.width, bg.height, offline=offline)
+    ov = Overlay(track, cfg, bg.width, bg.height, offline=offline, video=src)
+    if ov.streets is not None:
+        ov.streets.prefetch(around=t)
     img = ov.compose(bg, t)
     if max_size and max(img.size) > max_size:
         img.thumbnail((max_size, max_size), Image.LANCZOS)

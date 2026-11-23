@@ -21,6 +21,7 @@ from typing import NamedTuple, Optional
 import numpy as np
 from PIL import Image, ImageDraw
 
+from . import align
 from .graphics import TEXT_LOCK, font, hex_rgb
 from .streets import LocalFrame, Terrain, bbox_around, fetch_streets, merge_ways
 from .telemetry import Track
@@ -30,7 +31,11 @@ log = logging.getLogger(__name__)
 HFOV = 68.0  # degrees across the long side at zoom 1 (DJI Mini 5 Pro, measured from video)
 GRID_HZ = 50.0  # the camera path is rebuilt on a regular grid at this rate
 POS_SIGMA = 0.5  # s, smoothing of position and height
-ANG_SIGMA = 0.08  # s, smoothing of heading and tilt
+ANG_SIGMA = 0.03  # s, smoothing of heading and tilt (both read every frame from the gimbal)
+LAG_MAX = 0.4  # s, longest compass lag looked for
+OFFSET_MEDIAN_S = 30.0  # s, window of the running median on the gimbal-to-compass offset
+OFFSET_SIGMA_S = 10.0  # s, smoothing of that offset afterwards
+CALM_DEG_S = 10.0  # the offset is only measured while the camera turns slower than this
 STEP_M = 5.0  # streets are split into pieces this long (terrain, clipping)
 SPACING_M = 20.0  # closest spacing between possible name spots along a street
 NEAR_M = 3.0  # nothing closer than this in front of the camera is drawn
@@ -82,11 +87,59 @@ def _gauss(v: np.ndarray, sigma: float) -> np.ndarray:
     """Centred Gaussian (uses past and future: smooth without lag), edges renormalised."""
     if sigma <= 0 or len(v) < 3:
         return v
-    r = int(3 * sigma) + 1
+    r = min(int(3 * sigma) + 1, (len(v) - 1) // 2)  # a longer kernel: np.convolve's "same" grows
     k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
     num = np.convolve(v, k, mode="same")
     den = np.convolve(np.ones_like(v), k, mode="same")
     return num / den
+
+
+def _running_median(v: np.ndarray, half: int) -> np.ndarray:
+    if half < 1 or len(v) < 3:
+        return v
+    p = np.pad(v, half, mode="edge")
+    return np.median(np.lib.stride_tricks.sliding_window_view(p, 2 * half + 1), axis=1)
+
+
+def _fuse_heading(t: np.ndarray, compass: np.ndarray, gimbal: np.ndarray) -> Optional[np.ndarray]:
+    """Camera heading on the regular grid `t` (degrees, unwrapped).
+
+    The gimbal heading follows the picture frame by frame, but from its own zero (DJI Mini 5
+    Pro: ~45 degrees off north). The compass heading is true north but is the drone body's:
+    it updates 10 times a second, lags the picture, and misses the gimbal turning relative to
+    the body (seen: 10 degrees for 20 s while hovering). So the heading is the gimbal's plus
+    one offset taken from the compass over long stretches of calm flight (a median over
+    minutes: brief gimbal turns don't move it). Returns None if the two don't agree (a drone
+    that reports something else in that field)."""
+    if len(t) < 50:
+        return None
+    dt = (t[-1] - t[0]) / (len(t) - 1)
+    rg, rc = np.gradient(gimbal, dt), np.gradient(compass, dt)
+    if np.std(rg) < 0.5 or np.std(rc) < 0.5:
+        # the camera hardly turns: nothing to time-align, the compass alone is as good
+        lag = 0.0
+    else:
+        best = (-1.0, 0)
+        for k in range(int(round(LAG_MAX / dt)) + 1):
+            c = float(np.corrcoef(rg[: len(t) - k], rc[k:])[0, 1])
+            if c > best[0]:
+                best = (c, k)
+        if best[0] < 0.7:
+            log.info("Gimbal heading doesn't follow the compass (r=%.2f): compass only", best[0])
+            return None
+        lag = best[1] * dt
+    off = np.interp(t + lag, t, compass) - gimbal
+    # While turning fast any lag mismatch shows up as a big disagreement: calm moments only.
+    calm = np.abs(_gauss(rg, 0.25 / dt)) < CALM_DEG_S
+    if calm.sum() < max(10, 0.1 * len(t)):
+        calm[:] = True
+    off = np.interp(t, t[calm], off[calm])
+    step = max(1, int(round(0.2 / dt)))
+    sub = off[::step]
+    sub = _gauss(_running_median(sub, int(round(OFFSET_MEDIAN_S / 2 / (step * dt)))), OFFSET_SIGMA_S / (step * dt))
+    off = np.interp(t, t[::step], sub)
+    log.info("Camera heading: gimbal + compass offset (compass lag %.2f s)", lag)
+    return gimbal + off
 
 
 class Pose(NamedTuple):
@@ -117,9 +170,19 @@ class CameraPath:
         n = max(2, int((t[-1] - t[0]) * GRID_HZ) + 1)
         self.t = np.linspace(t[0], t[-1], n)
         dt = (self.t[-1] - self.t[0]) / max(1, n - 1) or 1.0
+        curves = {k: np.interp(self.t, t, _knots(t, v)) for k, v in raw.items()}
+        cam = [q.cam_yaw for q in s]
+        if all(c is not None for c in cam):
+            g = np.interp(self.t, t, _knots(t, np.degrees(np.unwrap(np.radians(cam)))))
+            try:
+                fused = _fuse_heading(self.t, curves["yaw"], g)
+            except Exception as e:  # never lose the overlay over this: the compass still works
+                log.warning("Camera heading from the gimbal failed (%s): compass only", e)
+                fused = None
+            if fused is not None:
+                curves["yaw"] = fused
         self.ch = {}
-        for k, v in raw.items():
-            curve = np.interp(self.t, t, _knots(t, v))
+        for k, curve in curves.items():
             sig = (POS_SIGMA if k in ("x", "y", "z") else ANG_SIGMA if k != "zoom" else 0.1) / dt
             self.ch[k] = _gauss(curve, sig)
 
@@ -129,12 +192,13 @@ class CameraPath:
 
 
 class Camera:
-    def __init__(self, pose: Pose, W: int, H: int, hfov: float, z_offset: float = 0.0):
-        yaw, pitch = math.radians(pose.yaw), math.radians(pose.pitch)
+    def __init__(self, pose: Pose, W: int, H: int, hfov: float, z_offset: float = 0.0, corr=None):
+        """`corr`: (pan, tilt, roll) degrees measured against the picture (align.py)."""
         self.C = np.array([pose.x, pose.y, pose.z + z_offset])
-        f = np.array([math.sin(yaw) * math.cos(pitch), math.cos(yaw) * math.cos(pitch), math.sin(pitch)])
-        r = np.array([math.cos(yaw), -math.sin(yaw), 0.0])
-        self.f, self.r, self.u = f, r, np.cross(r, f)
+        B = align.basis(pose.yaw, pose.pitch)
+        if corr is not None and any(corr):
+            B = align.correction(*corr) @ B
+        self.r, self.u, self.f = B
         self.W, self.H = W, H
         # the lens' field of view spans the long side, also for vertical videos
         self.fx = (max(W, H) / 2) / math.tan(math.radians(hfov) / 2) * pose.zoom
@@ -168,6 +232,30 @@ class _Geometry:
         self.anchors = None
         self.names: list[str] = []
         self.built_at = 0.0
+        self.align_lock = threading.Lock()
+        self.alignments: dict = {}
+
+    def alignment(self, video: str, hfov: float, z_offset: float, progress=None, cancelled=None, around=None):
+        """Corrections from comparing the video with satellite imagery (None if that isn't
+        possible). Kept per video and settings; `around` measures only near that moment."""
+        if self.path is None or self.offline:
+            return None
+        key = (video, round(hfov, 2), round(z_offset, 1), None if around is None else round(around / 5.0))
+        with self.align_lock:
+            if key in self.alignments:
+                return self.alignments[key]
+            full = (video, round(hfov, 2), round(z_offset, 1), None)
+            if full in self.alignments:  # the whole clip is done: good for any moment
+                return self.alignments[full]
+            try:
+                ground = align.Ground(self.frame, self.terrain, self.takeoff, self.offline)
+                al = align.align_clip(video, self.path, ground, hfov, z_offset, progress, cancelled, around)
+            except Exception as e:  # never stop a render over this: the telemetry is still there
+                log.warning("Couldn't line the streets up with the video: %s", e, exc_info=True)
+                al = None
+            if not (cancelled and cancelled()):
+                self.alignments[key] = al
+            return al
 
     def prefetch(self, max_dist: float, progress=None, cancelled=None) -> None:
         with self.lock:
@@ -280,7 +368,7 @@ class StreetsLayer:
 
     margin = 0
 
-    def __init__(self, track: Track, opts: dict, style: dict, W: int, H: int, offline: bool = False):
+    def __init__(self, track: Track, opts: dict, style: dict, W: int, H: int, offline: bool = False, video: Optional[str] = None):
         self.track, self.o, self.W, self.H = track, opts, int(W), int(H)
         self.offline = offline
         self.S = min(self.W, self.H) / 2160.0
@@ -292,6 +380,8 @@ class StreetsLayer:
         self.text_scale = float(opts.get("text_size", 1.0))
         self.show_lines = bool(opts.get("lines", True))
         self.show_names = bool(opts.get("names", True))
+        self.video = video if opts.get("auto_align", True) and not offline else None
+        self.alignment: Optional[align.Alignment] = None
         self._tags: dict = {}
         self._rot: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
@@ -322,14 +412,24 @@ class StreetsLayer:
     def path(self) -> Optional[CameraPath]:
         return self.g.path
 
-    def prefetch(self, progress=None, cancelled=None) -> None:
-        """Download streets and terrain for the flight (cached), then build the geometry."""
+    def prefetch(self, progress=None, cancelled=None, align_progress=None, around=None) -> None:
+        """Download streets and terrain for the flight (cached), build the geometry, then line
+        it up with the video (the whole clip, or only near `around` seconds)."""
         self.g.prefetch(self.max_dist, progress, cancelled)
         if self.g.ready:
             with _GEOM_LOCK:
                 _GEOM[self._key] = self.g
                 while len(_GEOM) > 3:
                     _GEOM.pop(next(iter(_GEOM)))
+        if self.g.ready and self.video and len(self.g.P) and not (cancelled and cancelled()):
+            stages = {"frames": (0.0, 0.15), "imagery": (0.15, 0.25), "height": (0.25, 0.45), "align": (0.45, 1.0)}
+
+            def report(stage, f):
+                if align_progress:
+                    a, b = stages.get(stage, (0.0, 1.0))
+                    align_progress(a + (b - a) * f)
+
+            self.alignment = self.g.alignment(self.video, self.hfov, self.z_offset, report, cancelled, around)
 
     # ----- drawing
     def render_parts(self, t: float):
@@ -337,7 +437,8 @@ class StreetsLayer:
         (x, y even), or None if nothing is visible."""
         if not self.ready or self.path is None or not len(self.g.P):
             return None
-        cam = Camera(self.path.at(t), self.W, self.H, self.hfov, self.z_offset)
+        al = self.alignment
+        cam = Camera(self.path.at(t), self.W, self.H, self.hfov, self.z_offset + (al.dz if al else 0.0), al.at(t) if al else None)
         dist = np.hypot(self.g.P[:, 0] - cam.C[0], self.g.P[:, 1] - cam.C[1])
         sx, sy, cz = cam.project(self.g.P)
         lines = self._lines(sx, sy, cz, dist) if self.show_lines else None

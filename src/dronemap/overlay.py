@@ -24,7 +24,9 @@ class Placed(NamedTuple):
 class Overlay:
     """All widgets for one video size and one set of settings."""
 
-    def __init__(self, track: Track, settings: dict, frame_w: int, frame_h: int, offline: bool = False):
+    def __init__(
+        self, track: Track, settings: dict, frame_w: int, frame_h: int, offline: bool = False, video: Optional[str] = None
+    ):
         self.track, self.settings = track, settings
         self.W, self.H = int(frame_w), int(frame_h)
         style = settings["style"]
@@ -33,7 +35,9 @@ class Overlay:
         st = settings.get("streets") or {}
         self.streets_missing = bool(st.get("enabled")) and not has_camera_data(track)
         if st.get("enabled") and not self.streets_missing:
-            self.streets = StreetsLayer(track, st, style, self.W, self.H, offline=offline or settings["tiles"].get("offline"))
+            self.streets = StreetsLayer(
+                track, st, style, self.W, self.H, offline=offline or settings["tiles"].get("offline"), video=video
+            )
             self.widgets.append(Placed("streets", self.streets, 0, 0))
         m = settings["map"]
         if m.get("enabled", True):
@@ -46,12 +50,14 @@ class Overlay:
             sw = StatsWidget(track, s, style, w, h)
             self.widgets.append(Placed("stats", sw, x - sw.margin, y - sw.margin))
 
-    def prefetch(self, progress=None, cancelled=None, streets_progress=None) -> None:
+    def prefetch(self, progress=None, cancelled=None, streets_progress=None, align_progress=None, around=None) -> None:
+        """Download what the widgets need. With `around` (seconds), the street lines are lined
+        up with the video only near that moment (quick, for a preview)."""
         for p in self.widgets:
             if isinstance(p.widget, MapWidget):
                 p.widget.prefetch(progress, cancelled)
         if self.streets is not None:
-            self.streets.prefetch(streets_progress or progress, cancelled)
+            self.streets.prefetch(streets_progress or progress, cancelled, align_progress, around)
 
     def streets_error(self) -> Optional[str]:
         """Why street names can't be shown, if they were asked for."""

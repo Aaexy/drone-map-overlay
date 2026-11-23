@@ -165,6 +165,10 @@ class JobRow(QFrame):
             self.status.setText("Downloading street names…")
             self.bar.setRange(0, 1000)
             self.bar.setValue(int(f * 1000))
+        elif stage == "align":
+            self.status.setText("Lining up the streets with the video…")
+            self.bar.setRange(0, 1000)
+            self.bar.setValue(int(f * 1000))
         elif stage == "finishing":
             self.status.setText("Finishing up…")
             self.bar.setRange(0, 0)

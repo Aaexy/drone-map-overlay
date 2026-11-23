@@ -35,6 +35,10 @@ class Sample:
     vs: Optional[float] = None  # vertical speed, m/s, positive = climbing
     pitch: Optional[float] = None  # camera (gimbal) tilt in degrees, 0 = level, -90 = straight down
     zoom: Optional[float] = None  # digital zoom factor, 1 = none
+    # Gimbal heading in degrees, in the gimbal's own frame: off from true north by an unknown,
+    # slowly drifting amount, but updated every frame and in sync with the picture (the drone's
+    # compass heading `yaw` updates 10 times a second and lags the picture by ~0.1-0.3 s).
+    cam_yaw: Optional[float] = None
 
 
 MAX_SPEED = 120.0  # m/s; anything faster between two fixes is a GPS glitch, not flight
@@ -60,7 +64,7 @@ class Track:
     def __init__(self, samples: list[Sample], source: str):
         if not samples:
             raise ValueError("empty track")
-        self.raw = [Sample(s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, None, s.pitch, s.zoom) for s in samples]
+        self.raw = [Sample(s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, None, s.pitch, s.zoom, s.cam_yaw) for s in samples]
         self.samples = drop_glitches(sorted(samples, key=lambda s: s.t))
         self.source = source
         self._fill_missing()
@@ -319,6 +323,7 @@ def _decode_djmd_frame(msg):
     gimbal = pb_get(msg, [3, 4])
     if gimbal is not None:
         s.pitch = _deci(pb_get(gimbal, [3, 1]))
+        s.cam_yaw = _deci(pb_get(gimbal, [3, 3]))
     s.zoom = _zoom(pb_get(msg, [3, 2, 23, 1]))
     return s
 
@@ -364,6 +369,7 @@ def _decode_djmd_fast(raw: bytes) -> Optional[Sample]:
         gimbal = pb_path(raw, [3, 4])
         if gimbal is not None:
             s.pitch = _deci(pb_path(gimbal, [3, 1]))
+            s.cam_yaw = _deci(pb_path(gimbal, [3, 3]))
         s.zoom = _zoom(pb_path(raw, [3, 2, 23, 1]))
         return s
     except (ValueError, IndexError, struct.error):
@@ -447,7 +453,7 @@ def read_srt(path: str) -> Optional[Track]:
     return Track(samples, "SRT captions") if samples else None
 
 
-CACHE_VERSION = 3  # 2: missing (zero) protobuf fields read as 0; 3: camera tilt and zoom
+CACHE_VERSION = 4  # 2: missing (zero) protobuf fields read as 0; 3: camera tilt and zoom; 4: gimbal heading
 
 
 def _cache_file(video_path: str) -> Optional[str]:
@@ -479,7 +485,7 @@ def _cache_save(path: Optional[str], track: Track, raw: list) -> None:
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        rows = [[s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, s.pitch, s.zoom] for s in raw]
+        rows = [[s.t, s.lat, s.lon, s.alt, s.speed, s.yaw, s.pitch, s.zoom, s.cam_yaw] for s in raw]
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"source": track.source, "samples": rows}, f, separators=(",", ":"))

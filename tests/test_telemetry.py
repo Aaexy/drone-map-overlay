@@ -37,7 +37,7 @@ def _int(num, v):
     return _field(num, 0, _varint(v & ((1 << 64) - 1)))
 
 
-def djmd_packet(lat, lon, vx=3.0, vy=4.0, yaw_deci=1234, alt_mm=55500):
+def djmd_packet(lat, lon, vx=3.0, vy=4.0, yaw_deci=1234, alt_mm=55500, gimbal=None):
     """A packet laid out like the DJI Mini 5 Pro's dvtm_Mini5Pro.proto frames."""
     gps = _msg(1, _double(2, lat) + _double(3, lon)) + _int(2, 96000)
     drone = (
@@ -46,7 +46,11 @@ def djmd_packet(lat, lon, vx=3.0, vy=4.0, yaw_deci=1234, alt_mm=55500):
         + _msg(4, gps)
         + _msg(5, _float(1, float(alt_mm)) if alt_mm else b"")
     )
-    return _msg(3, _msg(1, _int(1, 1)) + _msg(3, drone))
+    extra = b""
+    if gimbal is not None:  # (pitch, heading) in tenths of a degree; zeros left out like DJI does
+        pitch, head = gimbal
+        extra = _msg(4, _msg(1, _int(1, 2)) + _msg(3, (_int(1, pitch) if pitch else b"") + (_int(3, head) if head else b"")))
+    return _msg(3, _msg(1, _int(1, 1)) + _msg(3, drone) + extra)
 
 
 def test_djmd_decode():
@@ -171,3 +175,12 @@ def test_glitch_filter_never_discards_most_of_a_track():
     # A drone genuinely far from its first fix (e.g. first fix was wrong): keep the data.
     s = [Sample(0, 0.0, 0.0)] + [Sample(0.1 + i * 0.1, 46.0 + i * 1e-5, 7.0) for i in range(5)]
     assert len(drop_glitches(s)) >= 5
+
+
+def test_djmd_gimbal_tilt_and_heading():
+    raw = djmd_packet(46.25, -71.5, gimbal=(-213, -525))
+    for s in (_decode_djmd_frame(pb_parse(raw)), _decode_djmd_fast(raw)):
+        assert s.pitch == pytest.approx(-21.3)
+        assert s.cam_yaw == pytest.approx(-52.5)
+    level = _decode_djmd_fast(djmd_packet(46.25, -71.5, gimbal=(0, 0)))
+    assert (level.pitch, level.cam_yaw) == (0.0, 0.0)

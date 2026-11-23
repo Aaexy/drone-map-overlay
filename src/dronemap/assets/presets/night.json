@@ -66,6 +66,7 @@
     "text_size": 1.0,
     "max_distance": 800,
     "height_offset": 0.0,
-    "fov": 68.0
+    "fov": 69.6,
+    "auto_align": true
   }
 }

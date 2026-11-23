@@ -22,11 +22,14 @@ macOS and Linux.
 - **Flight stats:** speed, altitude, vertical speed, heading, distance flown, distance from
   the start, time and coordinates, side by side (wrapping into a grid when crowded) or
   stacked, on a dark or light panel, in metric or imperial units.
-- **Street names (new):** lines and names of the streets drawn into the picture, right where
+- **Street names:** lines and names of the streets drawn into the picture, right where
   the streets are, like an augmented-reality map. They stay pinned to the ground as the
   drone moves, turns and tilts, follow the terrain, take zoom into account and fade with
-  distance. Works with DJI drones that record the camera angle in the video (tested on the
-  Mini 5 Pro); uses OpenStreetMap data.
+  distance. Each video is lined up with satellite imagery before rendering, so the lines
+  sit on the real roads (typically within ~10–25 px in 4K), day or night. Uses OpenStreetMap
+  data.
+  **Tuned for the DJI Mini 5 Pro**, the only drone it has been tested with (see
+  [Street names](#street-names) for other drones).
 - **Presets (new):** save your look and layout under a name and switch between them in one
   click. Comes with a few to start from (Minimal, Satellite explorer, Night, Street
   explorer); import and export them to share.
@@ -74,18 +77,34 @@ USB stick without leaving anything on the computer.
 
 ### Street names
 
+> **Tuned for the DJI Mini 5 Pro.** The camera's field of view, how the telemetry is read
+> (camera tilt, gimbal heading, zoom) and the corrections were all measured on Mini 5 Pro
+> footage. Other DJI drones that record the camera angle in the video may work, but they're
+> untested: the field of view may need changing (`streets.fov` in the settings file), and if
+> a drone doesn't report the gimbal heading the compass is used instead. Reports from other
+> drones are welcome.
+
 Turn on **Street names** in Settings, then **Preview with a video…** to see them on your own
 footage. The drone's position, height, heading, camera tilt and zoom come from the video's
 telemetry; street positions come from OpenStreetMap and ground heights from public terrain
 data, both downloaded once for the area and cached.
 
-- The drone's height is measured from where it took off, so the take-off ground height is
-  estimated from terrain data under the start of the clip. If the lines sit slightly above
-  or below the real streets (for example when the clip starts far from the take-off spot),
-  use **Height fine-tune** until they line up in the preview.
+- **Line up with the video** (on by default): telemetry alone leaves the lines a few
+  degrees off. The gimbal's tilt reading is biased by up to ~2°, the compass by up to a few
+  degrees, and the drone's height is only known relative to an unknown take-off point. So
+  before rendering, a frame every 2 seconds is compared with satellite imagery of the same
+  spot. The camera angles and height that make them match are smoothed over a few seconds
+  and used for every frame. This takes about 30 seconds for a 5-minute 4K clip and is
+  cached. Where the ground can't be compared (water, sky, no imagery), the clip's average
+  correction is used.
+- The camera heading comes from the gimbal, which reports it every frame in step with the
+  picture. The compass only supplies its offset: it updates 10 times a second, lags by
+  0.1–0.3 s, and doesn't see the gimbal turning relative to the drone.
+- **Height fine-tune** is added on top, for footage the comparison can't handle.
 - Lines are drawn on the ground, so they show through buildings and trees.
-- The camera's field of view is set for the DJI Mini 5 Pro (68° across the long side);
-  other drones can set `streets.fov` in the settings file.
+- The camera's field of view is set for the DJI Mini 5 Pro (69.6° across the long side,
+  measured against satellite imagery). Other drones can set `streets.fov` in the settings
+  file.
 
 ### Command line
 
@@ -142,7 +161,9 @@ warning (hover it for details) and the log says why.
 Tiles are downloaded once for the area you flew and cached on your computer, so the tile
 server sees which area you requested. With street names on, the area is also sent to the
 [Overpass API](https://overpass-api.de/) (OpenStreetMap streets) and terrain tiles are read
-from [AWS Open Data](https://registry.opendata.aws/terrain-tiles/). Both sources ask for credit when you publish: turn on
+from [AWS Open Data](https://registry.opendata.aws/terrain-tiles/). **Line up with the video**
+downloads Esri satellite imagery of the area the camera sees (used only for the comparison,
+never shown). Both sources ask for credit when you publish: turn on
 **Map credit** in Settings, or put the credit line in your video description. Esri's imagery
 is provided under [Esri's terms of use](https://www.esri.com/en-us/legal/terms/full-master-agreement);
 check them if you use satellite view commercially.
@@ -173,6 +194,7 @@ Project layout:
 | `src/dronemap/widgets.py` | Draws the map and stats widgets (thread-safe) |
 | `src/dronemap/layout.py`, `overlay.py` | Where widgets go on frames of any shape |
 | `src/dronemap/ar.py`, `streets.py` | Street names: camera path, projection and drawing; OpenStreetMap and terrain data |
+| `src/dronemap/align.py` | Lines the street names up with the picture by comparing frames with satellite imagery |
 | `src/dronemap/pipeline.py`, `encoders.py` | Decode → overlay → encode (PyAV / FFmpeg), multi-threaded |
 | `src/dronemap/settings.py` | Settings, presets, defaults, migration and where they're stored |
 | `src/dronemap/assets/presets` | Built-in presets |

@@ -97,9 +97,9 @@ class FrameJob(QRunnable):
 class WidgetPreviewJob(QRunnable):
     """Render the widgets for the layout preview (may download map tiles, so not on the UI thread)."""
 
-    def __init__(self, token: int, track, cfg: dict, W: int, H: int, t: float, offline: bool, scale: float):
+    def __init__(self, token: int, track, cfg: dict, W: int, H: int, t: float, offline: bool, scale: float, video=None):
         super().__init__()
-        self.token, self.track, self.cfg = token, track, cfg
+        self.token, self.track, self.cfg, self.video = token, track, cfg, video
         self.W, self.H, self.t, self.offline, self.scale = W, H, t, offline, scale
         self.setAutoDelete(False)
         self.signals = _Signals()
@@ -108,9 +108,10 @@ class WidgetPreviewJob(QRunnable):
         from PIL import Image
 
         try:
-            ov = Overlay(self.track, self.cfg, self.W, self.H, offline=self.offline)
+            ov = Overlay(self.track, self.cfg, self.W, self.H, offline=self.offline, video=self.video)
             if ov.streets is not None:
-                ov.streets.prefetch()  # instant once downloaded
+                # instant once downloaded; lined up with the video only near this moment
+                ov.streets.prefetch(around=self.t)
             items = []
             for p in ov.widgets:
                 img = p.widget.render(self.t)

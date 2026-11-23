@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+Street names are **tuned for the DJI Mini 5 Pro** (the only drone tested). Other DJI
+drones that record the camera angle may work but are untested; see the README.
+
+### Improved
+
+- **Street names line up with the picture:** before rendering, frames are compared with
+  satellite imagery to correct the camera's tilt, heading and height. Telemetry alone was
+  off by 2–4° of tilt, up to a few degrees of heading and ~10 m of height, which put lines
+  50–200 px beside the streets in 4K. Now the typical error is 0.02–0.25° (1–12 px),
+  checked on day and night flights, hovering and flying at 68 km/h. About 30 s per
+  5-minute 4K clip, cached; can be turned off (**Line up with the video**).
+- Lines no longer swing out during fast turns: the camera heading now comes from the
+  gimbal, every frame in step with the picture. The compass heading lagged by 0.1–0.3 s,
+  up to 7° at 50°/s.
+- Fast gimbal tilts are followed more closely (less smoothing, now that every angle
+  updates every frame).
+- Camera field of view for the Mini 5 Pro corrected to 69.6° (was 68°, measured less
+  carefully).
+
 ## 0.2.0
 
 ### New
