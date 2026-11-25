@@ -138,6 +138,21 @@ def test_heading_ignores_an_unrelated_gimbal_field():
     assert ar._fuse_heading(t, true, np.cumsum(rng.normal(0, 1, len(t)))) is None
 
 
+def test_heading_follows_the_gimbal_on_a_steady_orbit():
+    """A circle at a constant 3.6 degrees/s: the turning rates hardly vary, so comparing
+    them is just noise, but the headings still stay a fixed angle apart."""
+    t = np.arange(0, 120, 0.02)  # the camera path's 50 Hz grid
+    true = 50 - 3.6 * t + 0.05 * np.sin(t)
+    gimbal, compass = _heading_case(t, true)
+    gimbal = np.round(gimbal, 1)  # stored in tenths of a degree
+    rng = np.random.default_rng(1)
+    compass = compass + rng.normal(0, 0.4, len(t))  # a compass that jitters
+    fused = ar._fuse_heading(t, compass, gimbal)
+    assert fused is not None
+    mid = (t > 20) & (t < 100)
+    assert np.max(np.abs(fused - true)[mid]) < 0.5
+
+
 def test_old_default_field_of_view_is_updated():
     old = settings.normalize({"streets": {"fov": 68.0}})
     assert old["streets"]["fov"] == settings.DEFAULTS["streets"]["fov"]

@@ -36,6 +36,7 @@ LAG_MAX = 0.4  # s, longest compass lag looked for
 OFFSET_MEDIAN_S = 30.0  # s, window of the running median on the gimbal-to-compass offset
 OFFSET_SIGMA_S = 10.0  # s, smoothing of that offset afterwards
 CALM_DEG_S = 10.0  # the offset is only measured while the camera turns slower than this
+AGREE_DEG = 3.0  # gimbal and compass headings must stay this close to a steady offset (95%)
 STEP_M = 5.0  # streets are split into pieces this long (terrain, clipping)
 SPACING_M = 20.0  # closest spacing between possible name spots along a street
 NEAR_M = 3.0  # nothing closer than this in front of the camera is drawn
@@ -101,6 +102,22 @@ def _running_median(v: np.ndarray, half: int) -> np.ndarray:
     return np.median(np.lib.stride_tricks.sliding_window_view(p, 2 * half + 1), axis=1)
 
 
+def _steady_lag(compass: np.ndarray, gimbal: np.ndarray, dt: float) -> Optional[int]:
+    """Compass lag (in samples) at which compass minus gimbal stays closest to a slowly
+    changing offset, or None if it never stays within AGREE_DEG of one (unrelated fields)."""
+    step = max(1, int(round(0.2 / dt)))
+    half = max(1, int(round(OFFSET_MEDIAN_S / 2 / (step * dt))))
+    best: tuple[float, Optional[int]] = (AGREE_DEG, None)
+    for k in range(int(round(LAG_MAX / dt)) + 1):
+        d = (compass[k:] - gimbal[: len(gimbal) - k])[::step]
+        if len(d) < 10:
+            break
+        spread = float(np.percentile(np.abs(d - _running_median(d, half)), 95))
+        if spread < best[0]:
+            best = (spread, k)
+    return best[1]
+
+
 def _fuse_heading(t: np.ndarray, compass: np.ndarray, gimbal: np.ndarray) -> Optional[np.ndarray]:
     """Camera heading on the regular grid `t` (degrees, unwrapped).
 
@@ -125,8 +142,14 @@ def _fuse_heading(t: np.ndarray, compass: np.ndarray, gimbal: np.ndarray) -> Opt
             if c > best[0]:
                 best = (c, k)
         if best[0] < 0.7:
-            log.info("Gimbal heading doesn't follow the compass (r=%.2f): compass only", best[0])
-            return None
+            # Turning rates that hardly vary (a steady orbit) leave only noise to correlate.
+            # Then check the headings themselves: they must stay a near-constant angle apart.
+            k = _steady_lag(compass, gimbal, dt)
+            if k is None:
+                log.info("Gimbal heading doesn't follow the compass (r=%.2f): compass only", best[0])
+                return None
+            log.info("Gimbal heading stays in step with the compass (turning rates r=%.2f)", best[0])
+            best = (best[0], k)
         lag = best[1] * dt
     off = np.interp(t + lag, t, compass) - gimbal
     # While turning fast any lag mismatch shows up as a big disagreement: calm moments only.

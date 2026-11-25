@@ -50,7 +50,7 @@ MAX_HEIGHT_CELLS = 2_000_000  # most terrain grid cells (~8 MB)
 THREADS = 4
 DECODERS = 3  # video readers at once
 AROUND_S = 5.0  # s either side measured for a preview
-ALIGN_VERSION = 1
+ALIGN_VERSION = 2  # 2: heading from the gimbal on steady orbits too (corrections are relative to it)
 
 Progress = Optional[Callable[[float], None]]
 Cancelled = Optional[Callable[[], bool]]
