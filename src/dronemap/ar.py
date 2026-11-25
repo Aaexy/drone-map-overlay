@@ -271,7 +271,7 @@ class _Geometry:
         lons = [s.lon for s in self.track.samples]
         bbox = bbox_around(lats, lons, max_dist + 150)
         try:
-            ways = merge_ways(fetch_streets(bbox))
+            ways = merge_ways(fetch_streets(bbox, cancelled=cancelled))
         except Exception as e:
             self.error = str(e)
             log.warning("Street names: %s", e)

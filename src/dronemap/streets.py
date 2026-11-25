@@ -11,7 +11,10 @@ import json
 import logging
 import math
 import os
+import socket
 import subprocess
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -25,10 +28,16 @@ from .tiles import USER_AGENT, TileSource, ssl_context
 log = logging.getLogger(__name__)
 
 R_EARTH = 6378137.0
+# Public Overpass servers, tried in turn. They're free and often busy: a busy one answers
+# 429/502/503/504 or a "runtime error" remark, so a failed round is retried after a pause.
 OVERPASS = (
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 )
+RETRY_WAITS = (5.0, 20.0)  # pauses before the 2nd and 3rd round over the servers
+FETCH_BUDGET_S = 240.0  # give up after this long in all
+_now, _sleep = time.monotonic, time.sleep  # (tests replace these)
 # Streets people know by name. Footpaths, cycleways, driveways and parking aisles are left
 # out: they'd bury the map in labels.
 ROAD_TYPES = (
@@ -98,8 +107,66 @@ def _post(url: str, data: bytes, timeout: float) -> bytes:
             raise e from e2
 
 
-def fetch_streets(bbox: tuple[float, float, float, float], timeout: float = 90) -> list[dict]:
-    """Named streets in `bbox` as [{"name", "highway", "pts": [(lat, lon), ...]}], cached."""
+def _busy(e: Exception) -> bool:
+    """True if the server is up but couldn't answer now (worth asking again later)."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code == 429 or e.code >= 500
+    if isinstance(e, urllib.error.URLError):
+        e = e.reason if isinstance(e.reason, Exception) else e
+    return isinstance(e, (socket.timeout, TimeoutError, ConnectionResetError, ValueError, _Busy))
+
+
+class _Busy(Exception):
+    pass
+
+
+def _describe(e: Exception) -> str:
+    return str(getattr(e, "reason", None) or e)
+
+
+def _download(body: bytes, timeout: float, cancelled=None) -> Optional[dict]:
+    """The Overpass answer from the first server that gives a complete one. Rounds over the
+    servers are repeated after a pause while any of them is only busy; None if cancelled."""
+    deadline = _now() + FETCH_BUDGET_S
+    err: Optional[Exception] = None
+    busy = False
+    for rnd in range(len(RETRY_WAITS) + 1):
+        if rnd:
+            if not busy or _now() + RETRY_WAITS[rnd - 1] + 10 > deadline:
+                break  # nobody's busy (no network?) or no time left: waiting won't help
+            log.info("Street servers busy; trying again in %.0f s", RETRY_WAITS[rnd - 1])
+            end = _now() + RETRY_WAITS[rnd - 1]
+            while _now() < end:
+                if cancelled and cancelled():
+                    return None
+                _sleep(0.25)
+        busy = False
+        for url in OVERPASS:
+            if cancelled and cancelled():
+                return None
+            left = deadline - _now()
+            if left < 10:
+                break
+            try:
+                data = json.loads(_post(url, body, min(timeout, left)))
+                remark = str(data.get("remark", ""))
+                if "error" in remark.lower():  # e.g. timed out: the elements are incomplete
+                    raise _Busy(remark)
+                return data
+            except Exception as e:  # try the next server
+                err, busy = e, busy or _busy(e)
+                log.warning("Street download from %s failed: %s", url, _describe(e))
+    if busy:
+        raise DataError(
+            "Street names couldn't be downloaded: OpenStreetMap's servers are busy (%s). "
+            "Try again in a few minutes." % _describe(err)
+        )
+    raise DataError("Street names couldn't be downloaded (%s)." % _describe(err))
+
+
+def fetch_streets(bbox: tuple[float, float, float, float], timeout: float = 90, cancelled=None) -> list[dict]:
+    """Named streets in `bbox` as [{"name", "highway", "pts": [(lat, lon), ...]}], cached.
+    [] if `cancelled()` turns true while waiting for a busy server."""
     key = "%.3f,%.3f,%.3f,%.3f|%d" % (*bbox, DATA_VERSION)
     path = os.path.join(cache_dir(), "streets", hashlib.sha1(key.encode()).hexdigest() + ".json")
     if os.path.exists(path):
@@ -113,18 +180,9 @@ def fetch_streets(bbox: tuple[float, float, float, float], timeout: float = 90) 
         ROAD_TYPES,
         *bbox,
     )
-    body = urllib.parse.urlencode({"data": q}).encode()
-    err: Optional[Exception] = None
-    for url in OVERPASS:
-        try:
-            raw = _post(url, body, timeout)
-            data = json.loads(raw)
-            break
-        except Exception as e:  # try the next server
-            err = e
-            log.warning("Street download from %s failed: %s", url, getattr(e, "reason", None) or e)
-    else:
-        raise DataError("Street names couldn't be downloaded (%s)." % (getattr(err, "reason", None) or err))
+    data = _download(urllib.parse.urlencode({"data": q}).encode(), timeout, cancelled)
+    if data is None:  # cancelled
+        return []
     ways = [
         {
             "name": e["tags"]["name"],

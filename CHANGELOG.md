@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Street names no longer go missing when OpenStreetMap's free street servers are briefly
+  busy ("Bad Gateway"). The download now tries three servers and, while they're busy,
+  tries again after 5 s and 20 s (up to 4 minutes in all). An incomplete answer from an
+  overloaded server is no longer used. If the servers are still busy, the message says so
+  and suggests trying again in a few minutes.
+
 ## 0.3.0
 
 Street names are **tuned for the DJI Mini 5 Pro** (the only drone tested). Other DJI

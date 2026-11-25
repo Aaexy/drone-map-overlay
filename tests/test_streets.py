@@ -1,4 +1,6 @@
+import json
 import math
+import urllib.error
 import warnings
 
 import numpy as np
@@ -29,7 +31,7 @@ def fake_osm(monkeypatch):
         {"name": "Main Street", "highway": "residential", "pts": [(LAT0 - 400 * M_LAT, LON0), (LAT0, LON0)]},
         {"name": "Main Street", "highway": "residential", "pts": [(LAT0, LON0), (LAT0 + 400 * M_LAT, LON0)]},
     ]
-    monkeypatch.setattr(ar, "fetch_streets", lambda bbox: ways)
+    monkeypatch.setattr(ar, "fetch_streets", lambda bbox, **k: ways)
     monkeypatch.setattr(streets.Terrain, "prefetch", lambda self, *a, **k: None)
     monkeypatch.setattr(streets.Terrain, "heights", lambda self, lat, lon: np.full(np.size(lat), 250.0))
     ar._GEOM.clear()
@@ -164,7 +166,7 @@ def test_render_frame_matches_the_image(fake_osm):
 
 
 def test_download_failure_is_reported_not_fatal(monkeypatch):
-    def fail(bbox):
+    def fail(bbox, **k):
         raise streets.DataError("Street names couldn't be downloaded (offline).")
 
     monkeypatch.setattr(ar, "fetch_streets", fail)
@@ -173,6 +175,86 @@ def test_download_failure_is_reported_not_fatal(monkeypatch):
     layer.prefetch()
     assert "couldn't be downloaded" in layer.error
     assert layer.render_parts(1.0) is None
+
+
+class FakeServers:
+    """Overpass servers that answer from a script: an Exception to raise or a dict to return."""
+
+    def __init__(self, monkeypatch, tmp_path, answers):
+        self.answers, self.calls, self.slept, self.clock = list(answers), [], 0.0, 0.0
+        monkeypatch.setattr(streets, "_post", self.post)
+        monkeypatch.setattr(streets, "_sleep", self.sleep)
+        monkeypatch.setattr(streets, "_now", lambda: self.clock)
+        monkeypatch.setattr(streets, "cache_dir", lambda: str(tmp_path))
+
+    def post(self, url, body, timeout):
+        self.calls.append(url)
+        a = self.answers.pop(0) if self.answers else ValueError("no more answers")
+        if isinstance(a, Exception):
+            raise a
+        return json.dumps(a).encode()
+
+    def sleep(self, s):
+        self.slept += s
+        self.clock += s
+
+
+BBOX = (46.0, 7.0, 46.01, 7.01)
+WAY = {
+    "type": "way",
+    "tags": {"name": "Main Street", "highway": "residential"},
+    "geometry": [{"lat": 46.0, "lon": 7.0}, {"lat": 46.001, "lon": 7.0}],
+}
+
+
+def http(code):
+    return urllib.error.HTTPError("https://x", code, "Bad Gateway" if code == 502 else "Busy", {}, None)
+
+
+@pytest.fixture
+def servers(monkeypatch, tmp_path):
+    return lambda answers: FakeServers(monkeypatch, tmp_path, answers)
+
+
+def test_busy_servers_are_retried_after_a_pause(servers):
+    n = len(streets.OVERPASS)
+    s = servers([http(502)] * n + [{"elements": [WAY]}])
+    ways = streets.fetch_streets(BBOX)
+    assert [w["name"] for w in ways] == ["Main Street"]
+    assert len(s.calls) == n + 1 and s.slept >= streets.RETRY_WAITS[0]
+
+
+def test_a_backup_server_answers_without_waiting(servers):
+    s = servers([http(502), {"elements": [WAY]}])
+    assert len(streets.fetch_streets(BBOX)) == 1
+    assert s.calls == list(streets.OVERPASS[:2]) and s.slept == 0
+
+
+def test_a_timed_out_answer_is_not_used_or_cached(servers):
+    partial = {"elements": [], "remark": 'runtime error: Query timed out in "query" at line 1'}
+    s = servers([partial, {"elements": [WAY]}])
+    assert len(streets.fetch_streets(BBOX)) == 1
+    assert len(s.calls) == 2
+
+
+def test_gives_up_with_a_clear_message_when_all_stay_busy(servers):
+    s = servers([http(502)] * 100)
+    with pytest.raises(streets.DataError, match=r"busy .*Bad Gateway.*few minutes"):
+        streets.fetch_streets(BBOX)
+    assert len(s.calls) == len(streets.OVERPASS) * (len(streets.RETRY_WAITS) + 1)
+
+
+def test_no_network_fails_at_once(servers):
+    s = servers([urllib.error.URLError(OSError("nodename nor servname provided"))] * 100)
+    with pytest.raises(streets.DataError, match="nodename"):
+        streets.fetch_streets(BBOX)
+    assert len(s.calls) == len(streets.OVERPASS) and s.slept == 0
+
+
+def test_waiting_for_busy_servers_can_be_cancelled(servers):
+    s = servers([http(503)] * 100)
+    assert streets.fetch_streets(BBOX, cancelled=lambda: len(s.calls) >= len(streets.OVERPASS)) == []
+    assert len(s.calls) == len(streets.OVERPASS)
 
 
 def test_overlay_without_camera_data_explains_why():
