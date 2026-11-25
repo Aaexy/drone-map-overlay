@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+
+- Street lines no longer shake on smooth orbits (a steady turn, like a point-of-interest
+  circle). The app didn't trust the gimbal heading there and fell back to the compass,
+  which updates only 10 times a second and jitters by about a degree. On a 2-minute
+  orbit the wobble went from about 15 px to under 2 px in 4K. Videos are lined up with
+  the satellite imagery again once, since the old results depended on the compass.
+
 ## 0.3.1
 
 ### Fixed
